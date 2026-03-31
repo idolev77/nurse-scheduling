@@ -31,7 +31,9 @@ export default function Constraints() {
   const [loading, setLoading] = useState(false);
 
   const fetchConstraints = () => {
-    api.get('/constraints/').then((res) => setConstraints(res.data));
+    api.get('/constraints/').then((res) =>
+      setConstraints([...res.data].sort((a, b) => a.date.localeCompare(b.date)))
+    );
   };
   useEffect(fetchConstraints, []);
 
@@ -115,6 +117,7 @@ export default function Constraints() {
         <table className="data-table">
           <thead>
             <tr>
+              <th>Nurse</th>
               <th>Date</th>
               <th>Shift</th>
               <th>Type</th>
@@ -125,13 +128,14 @@ export default function Constraints() {
           <tbody>
             {constraints.length === 0 ? (
               <tr>
-                <td colSpan="5" className="px-5 py-12 text-center text-slate-400">
+                <td colSpan="6" className="px-5 py-12 text-center text-slate-400">
                   No constraints yet — add your first one above.
                 </td>
               </tr>
             ) : (
               constraints.map((c) => (
                 <tr key={c.id}>
+                  <td className="font-medium text-slate-700">{c.nurse_name || '—'}</td>
                   <td className="font-medium">{c.date}</td>
                   <td><span className={SHIFT_BADGE[c.shift_type]}>{c.shift_type}</span></td>
                   <td>

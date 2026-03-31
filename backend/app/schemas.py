@@ -76,10 +76,18 @@ class ShiftConstraintCreate(BaseModel):
 class ShiftConstraintOut(BaseModel):
     id: int
     nurse_id: int
+    nurse_name: Optional[str] = None
     date: date
     shift_type: ShiftType
     constraint_type: ConstraintType
     note: Optional[str] = None
+
+    @classmethod
+    def from_orm(cls, obj):
+        data = super().from_orm(obj)
+        if obj.nurse:
+            data.nurse_name = f"{obj.nurse.first_name} {obj.nurse.last_name}"
+        return data
 
     class Config:
         from_attributes = True
