@@ -34,7 +34,7 @@ def update_user(
     user_id: int,
     payload: UserUpdate,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_role(RoleEnum.ADMIN)),
+    current_user: User = Depends(require_role(RoleEnum.HEAD_NURSE, RoleEnum.ADMIN)),
 ):
     user = db.query(User).filter(User.id == user_id).first()
     if not user:

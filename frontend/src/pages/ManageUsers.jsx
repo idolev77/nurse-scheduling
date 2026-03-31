@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { FiUsers } from 'react-icons/fi';
+import { FiUsers, FiAlertCircle } from 'react-icons/fi';
 import api from '../api';
 
 const ROLE_BADGE = {
@@ -25,6 +25,7 @@ function getInitials(first = '', last = '') {
 export default function ManageUsers() {
   const [users, setUsers] = useState([]);
   const [departments, setDepartments] = useState([]);
+  const [actionError, setActionError] = useState('');
 
   useEffect(() => {
     api.get('/users/').then((res) => setUsers(res.data));
@@ -34,18 +35,33 @@ export default function ManageUsers() {
   const reload = () => api.get('/users/').then((res) => setUsers(res.data));
 
   const handleRoleChange = async (userId, newRole) => {
-    await api.put(`/users/${userId}`, { role: newRole });
-    reload();
+    setActionError('');
+    try {
+      await api.put(`/users/${userId}`, { role: newRole });
+      reload();
+    } catch (err) {
+      setActionError(err.response?.data?.detail || 'Failed to update role');
+    }
   };
 
   const handleDeptChange = async (userId, deptId) => {
-    await api.put(`/users/${userId}`, { department_id: deptId ? Number(deptId) : null });
-    reload();
+    setActionError('');
+    try {
+      await api.put(`/users/${userId}`, { department_id: deptId ? Number(deptId) : null });
+      reload();
+    } catch (err) {
+      setActionError(err.response?.data?.detail || 'Failed to update department');
+    }
   };
 
   const handleToggleActive = async (userId, isActive) => {
-    await api.put(`/users/${userId}`, { is_active: !isActive });
-    reload();
+    setActionError('');
+    try {
+      await api.put(`/users/${userId}`, { is_active: !isActive });
+      reload();
+    } catch (err) {
+      setActionError(err.response?.data?.detail || 'Failed to update status');
+    }
   };
 
   const activeCount = users.filter((u) => u.is_active).length;
@@ -66,6 +82,12 @@ export default function ManageUsers() {
           </div>
         </div>
       </div>
+
+      {actionError && (
+        <div className="alert-error mb-4">
+          <FiAlertCircle size={15} className="flex-shrink-0" /> {actionError}
+        </div>
+      )}
 
       {/* Stats strip */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 mb-6">

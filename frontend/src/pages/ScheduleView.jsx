@@ -19,9 +19,14 @@ export default function ScheduleView() {
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
+    if (!user?.department_id) {
+      setSchedule(null);
+      setLoading(false);
+      return;
+    }
     setLoading(true);
     api
-      .get('/schedules/', { params: { department_id: user?.department_id } })
+      .get('/schedules/', { params: { department_id: user.department_id } })
       .then((res) => {
         const match = res.data.find((s) => s.week_start_date === weekStart);
         setSchedule(match || null);
@@ -76,6 +81,12 @@ export default function ScheduleView() {
       {loading ? (
         <div className="card p-16 text-center text-slate-400">
           <div className="animate-pulse text-lg font-medium">Loading schedule…</div>
+        </div>
+      ) : !user?.department_id ? (
+        <div className="card p-16 text-center">
+          <FiCalendar size={40} className="text-slate-200 mx-auto mb-4" />
+          <p className="text-slate-500 font-medium">You are not assigned to a department.</p>
+          <p className="text-slate-400 text-sm mt-1">Ask your manager to assign you to a department to see your schedule.</p>
         </div>
       ) : !schedule ? (
         <div className="card p-16 text-center">

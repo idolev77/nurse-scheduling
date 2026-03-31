@@ -19,6 +19,10 @@ export default function LeaveRequests() {
   const handleSubmit = async (e) => {
     e.preventDefault();
     setError('');
+    if (form.end_date < form.start_date) {
+      setError('End date must be on or after start date');
+      return;
+    }
     setLoading(true);
     try {
       await api.post('/leave-requests/', form);
