@@ -1,0 +1,28 @@
+# ── Node modules (the biggest directory — never copy into the build context) ──
+node_modules/
+
+# ── Previous build output ─────────────────────────────
+dist/
+build/
+
+# ── Vite cache ────────────────────────────────────────
+.vite/
+
+# ── IDE / editor ──────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+
+# ── Secrets ───────────────────────────────────────────
+.env
+*.env
+
+# ── Git ───────────────────────────────────────────────
+.git/
+.gitignore
+
+# ── Logs ──────────────────────────────────────────────
+*.log
+npm-debug.log*
