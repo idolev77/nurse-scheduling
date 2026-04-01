@@ -5,23 +5,23 @@ const AuthContext = createContext(null);
 
 export function AuthProvider({ children }) {
   const [user, setUser] = useState(() => {
-    const saved = localStorage.getItem('user');
+    const saved = sessionStorage.getItem('user');
     return saved ? JSON.parse(saved) : null;
   });
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    const token = localStorage.getItem('token');
+    const token = sessionStorage.getItem('token');
     if (token) {
       api
         .get('/auth/me')
         .then((res) => {
           setUser(res.data);
-          localStorage.setItem('user', JSON.stringify(res.data));
+          sessionStorage.setItem('user', JSON.stringify(res.data));
         })
         .catch(() => {
-          localStorage.removeItem('token');
-          localStorage.removeItem('user');
+          sessionStorage.removeItem('token');
+          sessionStorage.removeItem('user');
           setUser(null);
         })
         .finally(() => setLoading(false));
@@ -37,10 +37,10 @@ export function AuthProvider({ children }) {
     const res = await api.post('/auth/login', params, {
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     });
-    localStorage.setItem('token', res.data.access_token);
+    sessionStorage.setItem('token', res.data.access_token);
     const me = await api.get('/auth/me');
     setUser(me.data);
-    localStorage.setItem('user', JSON.stringify(me.data));
+    sessionStorage.setItem('user', JSON.stringify(me.data));
     return me.data;
   };
 
@@ -49,8 +49,8 @@ export function AuthProvider({ children }) {
   };
 
   const logout = () => {
-    localStorage.removeItem('token');
-    localStorage.removeItem('user');
+    sessionStorage.removeItem('token');
+    sessionStorage.removeItem('user');
     setUser(null);
   };
 
