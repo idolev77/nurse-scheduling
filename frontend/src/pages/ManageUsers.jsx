@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { FiUsers, FiAlertCircle } from 'react-icons/fi';
+import { FiUsers, FiAlertCircle, FiUserPlus, FiX } from 'react-icons/fi';
 import api from '../api';
 
 const ROLE_BADGE = {
@@ -22,10 +22,23 @@ function getInitials(first = '', last = '') {
   return `${first[0] || ''}${last[0] || ''}`.toUpperCase();
 }
 
+const EMPTY_FORM = {
+  first_name: '',
+  last_name: '',
+  email: '',
+  password: '',
+  role: 'nurse',
+  department_id: '',
+};
+
 export default function ManageUsers() {
   const [users, setUsers] = useState([]);
   const [departments, setDepartments] = useState([]);
   const [actionError, setActionError] = useState('');
+  const [showAddModal, setShowAddModal] = useState(false);
+  const [form, setForm] = useState(EMPTY_FORM);
+  const [formError, setFormError] = useState('');
+  const [formLoading, setFormLoading] = useState(false);
 
   useEffect(() => {
     api.get('/users/').then((res) => setUsers(res.data));
@@ -64,6 +77,26 @@ export default function ManageUsers() {
     }
   };
 
+  const handleAddUser = async (e) => {
+    e.preventDefault();
+    setFormError('');
+    setFormLoading(true);
+    try {
+      const payload = {
+        ...form,
+        department_id: form.department_id ? Number(form.department_id) : null,
+      };
+      await api.post('/users/', payload);
+      await reload();
+      setShowAddModal(false);
+      setForm(EMPTY_FORM);
+    } catch (err) {
+      setFormError(err.response?.data?.detail || 'Failed to create user');
+    } finally {
+      setFormLoading(false);
+    }
+  };
+
   const activeCount = users.filter((u) => u.is_active).length;
   const nurseCount = users.filter((u) => u.role === 'nurse').length;
   const headCount  = users.filter((u) => u.role === 'head_nurse').length;
@@ -71,7 +104,7 @@ export default function ManageUsers() {
   return (
     <div className="animate-fade-in-up">
       {/* Page header */}
-      <div className="page-header">
+      <div className="page-header flex items-center justify-between">
         <div className="flex items-center gap-3">
           <span className="inline-flex items-center justify-center w-10 h-10 rounded-xl bg-gradient-to-br from-violet-600 to-blue-500 text-white shadow">
             <FiUsers size={20} />
@@ -81,6 +114,12 @@ export default function ManageUsers() {
             <p className="page-subtitle">Edit roles, departments, and account status</p>
           </div>
         </div>
+        <button
+          onClick={() => { setShowAddModal(true); setFormError(''); setForm(EMPTY_FORM); }}
+          className="btn-primary flex items-center gap-2"
+        >
+          <FiUserPlus size={16} /> Add User
+        </button>
       </div>
 
       {actionError && (
@@ -194,6 +233,122 @@ export default function ManageUsers() {
           </table>
         </div>
       </div>
+
+      {/* Add User Modal */}
+      {showAddModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md mx-4 p-6">
+            <div className="flex items-center justify-between mb-5">
+              <h2 className="text-lg font-bold text-slate-800 flex items-center gap-2">
+                <FiUserPlus className="text-violet-600" /> Add New User
+              </h2>
+              <button
+                onClick={() => setShowAddModal(false)}
+                className="p-1.5 rounded-lg hover:bg-slate-100 text-slate-400 hover:text-slate-600 transition-colors"
+              >
+                <FiX size={18} />
+              </button>
+            </div>
+
+            {formError && (
+              <div className="alert-error mb-4">
+                <FiAlertCircle size={14} className="flex-shrink-0" /> {formError}
+              </div>
+            )}
+
+            <form onSubmit={handleAddUser} className="space-y-4">
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-medium text-slate-600 mb-1">First Name</label>
+                  <input
+                    className="field"
+                    required
+                    value={form.first_name}
+                    onChange={(e) => setForm({ ...form, first_name: e.target.value })}
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-slate-600 mb-1">Last Name</label>
+                  <input
+                    className="field"
+                    required
+                    value={form.last_name}
+                    onChange={(e) => setForm({ ...form, last_name: e.target.value })}
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-xs font-medium text-slate-600 mb-1">Email</label>
+                <input
+                  type="email"
+                  className="field"
+                  required
+                  value={form.email}
+                  onChange={(e) => setForm({ ...form, email: e.target.value })}
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-medium text-slate-600 mb-1">Password</label>
+                <input
+                  type="password"
+                  className="field"
+                  required
+                  minLength={6}
+                  value={form.password}
+                  onChange={(e) => setForm({ ...form, password: e.target.value })}
+                />
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-medium text-slate-600 mb-1">Role</label>
+                  <select
+                    className="field-select"
+                    value={form.role}
+                    onChange={(e) => setForm({ ...form, role: e.target.value })}
+                  >
+                    <option value="nurse">Nurse</option>
+                    <option value="head_nurse">Head Nurse</option>
+                    <option value="admin">Admin</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-slate-600 mb-1">Department</label>
+                  <select
+                    className="field-select"
+                    value={form.department_id}
+                    onChange={(e) => setForm({ ...form, department_id: e.target.value })}
+                  >
+                    <option value="">— None —</option>
+                    {departments.map((d) => (
+                      <option key={d.id} value={d.id}>{d.name}</option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              <div className="flex gap-3 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setShowAddModal(false)}
+                  className="flex-1 btn-ghost"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={formLoading}
+                  className="flex-1 btn-primary disabled:opacity-60"
+                >
+                  {formLoading ? 'Creating…' : 'Create User'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
