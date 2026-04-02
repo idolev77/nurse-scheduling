@@ -8,6 +8,7 @@ from app.auth import get_current_user
 from app.database import get_db
 from app.models import (
     Notification,
+    RoleEnum,
     ShiftAssignment,
     SwapRequest,
     SwapRequestStatus,
@@ -164,16 +165,36 @@ def claim_swap(
 
     # Notify the original requester that their shift was taken
     claimant_name = f"{current_user.first_name} {current_user.last_name}"
+    requester_name = f"{sr.requester.first_name} {sr.requester.last_name}"
     shift_date_str = assignment.date.strftime("%A, %d %b").lstrip("0")
     shift_type_label = assignment.shift_type.value.capitalize()
-    notification = Notification(
+    db.add(Notification(
         user_id=sr.requester_id,
         message=(
             f"Your {shift_type_label} shift on {shift_date_str} "
             f"was claimed by {claimant_name}."
         ),
+    ))
+
+    # Notify all managers (head nurses + admins) about the swap
+    managers = db.query(User).filter(
+        User.role.in_([RoleEnum.HEAD_NURSE, RoleEnum.ADMIN]),
+        User.is_active == True,
+    ).all()
+    dept_name = (
+        assignment.schedule.department.name
+        if assignment.schedule and assignment.schedule.department
+        else "Unknown department"
     )
-    db.add(notification)
+    for manager in managers:
+        db.add(Notification(
+            user_id=manager.id,
+            message=(
+                f"Shift swap in {dept_name}: {requester_name}'s "
+                f"{shift_type_label} shift on {shift_date_str} "
+                f"was taken by {claimant_name}."
+            ),
+        ))
 
     db.commit()
     db.refresh(sr)
