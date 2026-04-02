@@ -3,7 +3,7 @@
 A full-stack web application that streamlines and optimizes nurse shift scheduling in medical departments. A smart greedy algorithm assigns nurses to shifts while respecting hard constraints, personal preferences, leave requests, rest rules, and minimum staffing requirements.
 
 ## Project Team
-- **Ido**
+- **Ido Levy**
 - **Nereya Mantzur**
 
 ---
