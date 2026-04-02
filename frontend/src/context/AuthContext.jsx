@@ -44,10 +44,6 @@ export function AuthProvider({ children }) {
     return me.data;
   };
 
-  const register = async (data) => {
-    await api.post('/auth/register', data);
-  };
-
   const logout = () => {
     sessionStorage.removeItem('token');
     sessionStorage.removeItem('user');
@@ -55,7 +51,7 @@ export function AuthProvider({ children }) {
   };
 
   return (
-    <AuthContext.Provider value={{ user, login, register, logout, loading }}>
+    <AuthContext.Provider value={{ user, login, logout, loading }}>
       {children}
     </AuthContext.Provider>
   );

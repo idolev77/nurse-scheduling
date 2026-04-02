@@ -2,7 +2,6 @@ import { Routes, Route, Navigate } from 'react-router-dom';
 import { useAuth } from './context/AuthContext';
 import Navbar from './components/Navbar';
 import Login from './pages/Login';
-import Register from './pages/Register';
 import Dashboard from './pages/Dashboard';
 import ScheduleView from './pages/ScheduleView';
 import Constraints from './pages/Constraints';
@@ -33,7 +32,6 @@ export default function App() {
       <main className="max-w-7xl mx-auto px-4 py-6">
         <Routes>
           <Route path="/login" element={<Login />} />
-          <Route path="/register" element={<Register />} />
           <Route path="/dashboard" element={<PrivateRoute><Dashboard /></PrivateRoute>} />
           <Route path="/schedule" element={<PrivateRoute><ScheduleView /></PrivateRoute>} />
           <Route path="/constraints" element={<PrivateRoute><Constraints /></PrivateRoute>} />

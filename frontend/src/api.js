@@ -19,7 +19,7 @@ api.interceptors.response.use(
   (response) => response,
   (error) => {
     const url = error.config?.url || '';
-    const isAuthEndpoint = url.includes('/auth/login') || url.includes('/auth/register');
+    const isAuthEndpoint = url.includes('/auth/login');
     if (error.response?.status === 401 && !isAuthEndpoint) {
       sessionStorage.removeItem('token');
       sessionStorage.removeItem('user');
