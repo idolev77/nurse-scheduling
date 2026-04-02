@@ -31,6 +31,12 @@ class ConstraintType(str, enum.Enum):
     PREFER = "prefer"
 
 
+class SwapRequestStatus(str, enum.Enum):
+    OPEN = "open"
+    CLAIMED = "claimed"
+    CANCELLED = "cancelled"
+
+
 # ── Users ──────────────────────────────────────────────
 class User(Base):
     __tablename__ = "users"
@@ -49,6 +55,9 @@ class User(Base):
     constraints = relationship("ShiftConstraint", back_populates="nurse")
     leave_requests = relationship("LeaveRequest", back_populates="nurse", foreign_keys="LeaveRequest.nurse_id")
     shifts = relationship("ShiftAssignment", back_populates="nurse")
+    swap_requests_offered = relationship("SwapRequest", back_populates="requester", foreign_keys="SwapRequest.requester_id")
+    swap_requests_claimed = relationship("SwapRequest", back_populates="claimant", foreign_keys="SwapRequest.claimant_id")
+    notifications = relationship("Notification", back_populates="user", foreign_keys="Notification.user_id")
 
 
 # ── Departments ────────────────────────────────────────
@@ -92,6 +101,7 @@ class ShiftAssignment(Base):
 
     schedule = relationship("Schedule", back_populates="assignments")
     nurse = relationship("User", back_populates="shifts")
+    swap_requests = relationship("SwapRequest", back_populates="shift_assignment", cascade="all, delete-orphan")
 
 
 # ── Shift Constraints (nurse preferences) ─────────────
@@ -123,3 +133,34 @@ class LeaveRequest(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
     nurse = relationship("User", back_populates="leave_requests", foreign_keys=[nurse_id])
+
+
+# ── Swap Requests (Shift Swap Marketplace) ─────────────
+class SwapRequest(Base):
+    __tablename__ = "swap_requests"
+
+    id = Column(Integer, primary_key=True, index=True)
+    shift_assignment_id = Column(Integer, ForeignKey("shift_assignments.id"), nullable=False)
+    requester_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    claimant_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    status = Column(Enum(SwapRequestStatus), default=SwapRequestStatus.OPEN, nullable=False)
+    note = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    resolved_at = Column(DateTime, nullable=True)
+
+    shift_assignment = relationship("ShiftAssignment", back_populates="swap_requests")
+    requester = relationship("User", back_populates="swap_requests_offered", foreign_keys=[requester_id])
+    claimant = relationship("User", back_populates="swap_requests_claimed", foreign_keys=[claimant_id])
+
+
+# ── Notifications ──────────────────────────────────────
+class Notification(Base):
+    __tablename__ = "notifications"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    message = Column(Text, nullable=False)
+    is_read = Column(Boolean, default=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    user = relationship("User", back_populates="notifications", foreign_keys=[user_id])

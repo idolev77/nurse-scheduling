@@ -149,6 +149,11 @@ def generate_schedule(db: Session, department_id: int, week_start: date) -> Sche
         .first()
     )
     if existing:
+        if existing.is_published:
+            raise ValueError(
+                "A published schedule already exists for this week. "
+                "You cannot regenerate a published schedule."
+            )
         db.delete(existing)
         db.flush()
 

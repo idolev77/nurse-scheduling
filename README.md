@@ -45,7 +45,7 @@ cd backend
 pip install -r requirements.txt
 ```
 
-Create `backend/.env`:
+Create `backend/.env`: 
 ```env
 DATABASE_URL=sqlite:///./nurse_scheduling.db
 SECRET_KEY=your-secret-key-here

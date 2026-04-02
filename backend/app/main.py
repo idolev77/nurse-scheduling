@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.database import engine, Base
-from app.routers import auth, users, departments, constraints, leave_requests, schedules, shift_summary
+from app.routers import auth, users, departments, constraints, leave_requests, schedules, shift_summary, swap_requests, notifications
 
 # Create all tables
 Base.metadata.create_all(bind=engine)
@@ -29,6 +29,8 @@ app.include_router(constraints.router)
 app.include_router(leave_requests.router)
 app.include_router(schedules.router)
 app.include_router(shift_summary.router)
+app.include_router(swap_requests.router)
+app.include_router(notifications.router)
 
 
 @app.get("/")

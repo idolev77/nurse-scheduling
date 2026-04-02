@@ -1,6 +1,6 @@
 import { useAuth } from '../context/AuthContext';
 import { Link } from 'react-router-dom';
-import { FiCalendar, FiSliders, FiClock, FiUsers, FiSettings, FiArrowRight, FiActivity } from 'react-icons/fi';
+import { FiCalendar, FiSliders, FiClock, FiUsers, FiSettings, FiArrowRight, FiActivity, FiRepeat } from 'react-icons/fi';
 
 const CARDS = [
   {
@@ -33,6 +33,14 @@ const CARDS = [
     title: 'Shift Hours Summary',
     description: 'Monthly quota progress, shift breakdown, and smart statistics',
     gradient: 'from-sky-500 to-blue-600',
+    manager: false,
+  },
+  {
+    to: '/swap-marketplace',
+    icon: <FiRepeat size={22} />,
+    title: 'Shift Swap Marketplace',
+    description: 'Offer your shift for swap or claim an available shift from a colleague',
+    gradient: 'from-emerald-500 to-teal-500',
     manager: false,
   },
   {

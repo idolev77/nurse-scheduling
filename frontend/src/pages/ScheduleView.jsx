@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import { format, startOfWeek, addDays, parseISO } from 'date-fns';
 import api from '../api';
 import { useAuth } from '../context/AuthContext';
-import { FiChevronLeft, FiChevronRight, FiCalendar, FiSun, FiClock, FiMoon } from 'react-icons/fi';
+import { FiChevronLeft, FiChevronRight, FiCalendar, FiSun, FiClock, FiMoon, FiRepeat } from 'react-icons/fi';
 
 const SHIFTS = [
   { key: 'morning',   label: 'Morning',   time: '07:00 – 15:00', icon: <FiSun size={14} />,    badge: 'badge-morning',   bg: 'bg-amber-50',   header: 'bg-amber-500' },
@@ -17,6 +17,14 @@ export default function ScheduleView() {
     format(startOfWeek(new Date(), { weekStartsOn: 0 }), 'yyyy-MM-dd')
   );
   const [loading, setLoading] = useState(false);
+  const [offeringSwap, setOfferingSwap] = useState(null); // assignmentId being offered
+  const [offeredIds, setOfferedIds] = useState(new Set()); // assignmentIds already open
+  const [swapToast, setSwapToast] = useState('');
+
+  const showSwapToast = (msg) => {
+    setSwapToast(msg);
+    setTimeout(() => setSwapToast(''), 4000);
+  };
 
   useEffect(() => {
     if (!user?.department_id) {
@@ -35,6 +43,32 @@ export default function ScheduleView() {
       .finally(() => setLoading(false));
   }, [weekStart, user]);
 
+  // Load which of my assignments are already offered for swap
+  useEffect(() => {
+    if (!user) return;
+    api.get('/swap-requests/mine').then((res) => {
+      const openIds = new Set(
+        res.data
+          .filter((sr) => sr.status === 'open')
+          .map((sr) => sr.shift_assignment_id)
+      );
+      setOfferedIds(openIds);
+    }).catch(() => {});
+  }, [user, schedule]);
+
+  const handleOfferSwap = async (assignmentId) => {
+    setOfferingSwap(assignmentId);
+    try {
+      await api.post('/swap-requests', { shift_assignment_id: assignmentId });
+      setOfferedIds((prev) => new Set([...prev, assignmentId]));
+      showSwapToast('Shift offered for swap! Colleagues can now claim it.');
+    } catch (err) {
+      showSwapToast(err.response?.data?.detail || 'Could not offer shift for swap.');
+    } finally {
+      setOfferingSwap(null);
+    }
+  };
+
   const shiftWeek = (delta) => {
     const d = addDays(parseISO(weekStart), delta * 7);
     setWeekStart(format(d, 'yyyy-MM-dd'));
@@ -49,6 +83,13 @@ export default function ScheduleView() {
 
   return (
     <div>
+      {/* Swap toast */}
+      {swapToast && (
+        <div className="fixed top-5 right-5 z-50 bg-slate-800 text-white text-sm px-4 py-3 rounded-xl shadow-lg flex items-center gap-2">
+          <FiRepeat size={15} />
+          {swapToast}
+        </div>
+      )}
       {/* Page header */}
       <div className="flex flex-wrap items-center justify-between gap-4 mb-6">
         <div className="page-header mb-0">
@@ -144,16 +185,37 @@ export default function ScheduleView() {
                         className={`px-2 py-3 text-center align-top ${isToday ? shift.bg : ''}`}
                       >
                         <div className="flex flex-col gap-1 items-center">
-                          {assigns.map((a) => (
-                            <span
-                              key={a.id}
-                              className={`${shift.badge} text-[11px] px-2 py-0.5 max-w-[90px] truncate block
-                                ${a.nurse_id === user?.id ? 'ring-2 ring-offset-1 ring-blue-400 font-bold' : ''}`}
-                              title={a.nurse_name}
-                            >
-                              {a.nurse_name?.split(' ')[0] || `#${a.nurse_id}`}
-                            </span>
-                          ))}
+                          {assigns.map((a) => {
+                            const isMe = a.nurse_id === user?.id;
+                            const isPast = dayStr < format(new Date(), 'yyyy-MM-dd');
+                            const isOffered = offeredIds.has(a.id);
+                            return (
+                              <div key={a.id} className="flex flex-col items-center gap-0.5 w-full">
+                                <span
+                                  className={`${shift.badge} text-[11px] px-2 py-0.5 max-w-[90px] truncate block
+                                    ${isMe ? 'ring-2 ring-offset-1 ring-blue-400 font-bold' : ''}`}
+                                  title={a.nurse_name}
+                                >
+                                  {a.nurse_name?.split(' ')[0] || `#${a.nurse_id}`}
+                                </span>
+                                {isMe && !isPast && (
+                                  <button
+                                    onClick={() => handleOfferSwap(a.id)}
+                                    disabled={isOffered || offeringSwap === a.id}
+                                    title={isOffered ? 'Already offered for swap' : 'Offer this shift for swap'}
+                                    className={`flex items-center gap-0.5 text-[10px] px-1.5 py-0.5 rounded-md font-medium transition-colors
+                                      ${isOffered
+                                        ? 'bg-amber-100 text-amber-600 cursor-default'
+                                        : 'bg-white border border-slate-200 text-slate-500 hover:bg-emerald-50 hover:text-emerald-600 hover:border-emerald-200'
+                                      }`}
+                                  >
+                                    <FiRepeat size={9} />
+                                    {offeringSwap === a.id ? '…' : isOffered ? 'Offered' : 'Swap?'}
+                                  </button>
+                                )}
+                              </div>
+                            );
+                          })}
                           {assigns.length === 0 && (
                             <span className="text-slate-200 text-xs select-none">—</span>
                           )}
