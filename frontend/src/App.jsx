@@ -9,6 +9,7 @@ import Constraints from './pages/Constraints';
 import LeaveRequests from './pages/LeaveRequests';
 import ManageSchedule from './pages/ManageSchedule';
 import ManageUsers from './pages/ManageUsers';
+import ShiftHoursSummaryPage from './pages/ShiftHoursSummaryPage';
 
 function PrivateRoute({ children }) {
   const { user, loading } = useAuth();
@@ -36,6 +37,7 @@ export default function App() {
           <Route path="/schedule" element={<PrivateRoute><ScheduleView /></PrivateRoute>} />
           <Route path="/constraints" element={<PrivateRoute><Constraints /></PrivateRoute>} />
           <Route path="/leave-requests" element={<PrivateRoute><LeaveRequests /></PrivateRoute>} />
+          <Route path="/shift-summary" element={<PrivateRoute><ShiftHoursSummaryPage /></PrivateRoute>} />
           <Route path="/manage/schedule" element={<ManagerRoute><ManageSchedule /></ManagerRoute>} />
           <Route path="/manage/users" element={<ManagerRoute><ManageUsers /></ManagerRoute>} />
           <Route path="*" element={<Navigate to="/dashboard" />} />

@@ -1,6 +1,6 @@
 import { useAuth } from '../context/AuthContext';
 import { Link } from 'react-router-dom';
-import { FiCalendar, FiSliders, FiClock, FiUsers, FiSettings, FiArrowRight } from 'react-icons/fi';
+import { FiCalendar, FiSliders, FiClock, FiUsers, FiSettings, FiArrowRight, FiActivity } from 'react-icons/fi';
 
 const CARDS = [
   {
@@ -25,6 +25,14 @@ const CARDS = [
     title: 'Leave Requests',
     description: 'Request time off and track your approval status',
     gradient: 'from-emerald-500 to-teal-500',
+    manager: false,
+  },
+  {
+    to: '/shift-summary',
+    icon: <FiActivity size={22} />,
+    title: 'Shift Hours Summary',
+    description: 'Monthly quota progress, shift breakdown, and smart statistics',
+    gradient: 'from-sky-500 to-blue-600',
     manager: false,
   },
   {
