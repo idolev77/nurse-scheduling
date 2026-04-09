@@ -20,6 +20,11 @@ export default function ManageSchedule() {
   });
   const [schedule, setSchedule] = useState(null);
   const [generating, setGenerating] = useState(false);
+  const [preparingShifts, setPreparingShifts] = useState(false);
+  const [shiftsReady, setShiftsReady] = useState(false);
+  const [warnings, setWarnings] = useState([]);
+  const [totalRequired, setTotalRequired] = useState(0);
+  const [totalAssigned, setTotalAssigned] = useState(0);
   const [message, setMessage] = useState({ text: '', type: '' });
 
   useEffect(() => {
@@ -29,8 +34,22 @@ export default function ManageSchedule() {
     });
   }, []);
 
+  // Check if shifts exist for the selected week
+  const checkShifts = async () => {
+    if (!selectedDept) return;
+    try {
+      const res = await api.get('/shifts/', {
+        params: { department_id: selectedDept, week_start: weekStart },
+      });
+      setShiftsReady(res.data.length > 0);
+    } catch {
+      setShiftsReady(false);
+    }
+  };
+
   useEffect(() => {
     if (!selectedDept) return;
+    checkShifts();
     api
       .get('/schedules/', { params: { department_id: selectedDept } })
       .then((res) => {
@@ -39,16 +58,43 @@ export default function ManageSchedule() {
       });
   }, [selectedDept, weekStart]);
 
+  const handlePrepareShifts = async () => {
+    setPreparingShifts(true);
+    setMessage({ text: '', type: '' });
+    try {
+      await api.post('/shifts/generate-week', {
+        department_id: Number(selectedDept),
+        week_start_date: weekStart,
+      });
+      setShiftsReady(true);
+      setMessage({ text: 'Shifts prepared! Nurses can now submit availability.', type: 'success' });
+    } catch (err) {
+      setMessage({ text: err.response?.data?.detail || 'Failed to prepare shifts', type: 'error' });
+    } finally {
+      setPreparingShifts(false);
+    }
+  };
+
   const handleGenerate = async () => {
     setGenerating(true);
     setMessage({ text: '', type: '' });
+    setWarnings([]);
     try {
       const res = await api.post('/schedules/generate', {
         department_id: Number(selectedDept),
         week_start_date: weekStart,
       });
-      setSchedule(res.data);
-      setMessage({ text: 'Schedule generated successfully!', type: 'success' });
+      setSchedule(res.data.schedule);
+      setWarnings(res.data.warnings || []);
+      setTotalRequired(res.data.total_required || 0);
+      setTotalAssigned(res.data.total_assigned || 0);
+      const warnCount = (res.data.warnings || []).length;
+      setMessage({
+        text: warnCount > 0
+          ? `Schedule generated with ${warnCount} unfilled shift(s). Assigned ${res.data.total_assigned}/${res.data.total_required} slots.`
+          : `Schedule generated successfully! All ${res.data.total_required} slots filled.`,
+        type: warnCount > 0 ? 'warning' : 'success',
+      });
     } catch (err) {
       setMessage({ text: err.response?.data?.detail || 'Failed to generate schedule', type: 'error' });
     } finally {
@@ -118,9 +164,27 @@ export default function ManageSchedule() {
             />
           </div>
           <button
+            onClick={handlePrepareShifts}
+            disabled={preparingShifts || shiftsReady}
+            className="btn btn-secondary flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+            title={shiftsReady ? 'Shifts already prepared' : 'Prepare shift slots for the week'}
+          >
+            {preparingShifts ? (
+              <>
+                <span className="inline-block w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                Preparing…
+              </>
+            ) : shiftsReady ? (
+              <><FiCheckCircle size={16} /> Shifts Ready</>
+            ) : (
+              <><FiCalendar size={16} /> Prepare Shifts</>
+            )}
+          </button>
+          <button
             onClick={handleGenerate}
-            disabled={generating}
+            disabled={generating || !shiftsReady}
             className="btn btn-primary flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+            title={!shiftsReady ? 'Prepare shifts first' : ''}
           >
             {generating ? (
               <>
@@ -142,9 +206,18 @@ export default function ManageSchedule() {
         </div>
 
         {message.text && (
-          <div className={`mt-4 ${message.type === 'error' ? 'alert-error' : 'alert-success'} flex items-center gap-2`}>
+          <div className={`mt-4 ${message.type === 'error' ? 'alert-error' : message.type === 'warning' ? 'alert-error' : 'alert-success'} flex items-center gap-2`}>
             <FiAlertCircle size={16} className="shrink-0" />
             {message.text}
+          </div>
+        )}
+
+        {warnings.length > 0 && (
+          <div className="mt-3 p-3 bg-amber-50 border border-amber-200 rounded-xl">
+            <p className="text-sm font-semibold text-amber-800 mb-1">Unfilled Shifts ({warnings.length}):</p>
+            <ul className="text-xs text-amber-700 space-y-0.5 list-disc list-inside">
+              {warnings.map((w, i) => <li key={i}>{w}</li>)}
+            </ul>
           </div>
         )}
       </div>

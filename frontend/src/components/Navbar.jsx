@@ -1,13 +1,14 @@
 import { Link, useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
-import { FiCalendar, FiLogOut, FiMenu, FiX, FiGrid, FiSliders, FiClock, FiSettings, FiUsers, FiRepeat, FiBell } from 'react-icons/fi';
+import { FiCalendar, FiLogOut, FiMenu, FiX, FiGrid, FiSliders, FiClock, FiSettings, FiUsers, FiRepeat, FiBell, FiCheckSquare } from 'react-icons/fi';
 import { useState, useEffect, useRef } from 'react';
 import api from '../api';
 
 const NAV_LINKS = [
   { to: '/dashboard',         label: 'Dashboard',        icon: <FiGrid size={15} />,    manager: false },
   { to: '/schedule',          label: 'Schedule',          icon: <FiCalendar size={15} />, manager: false },
-  { to: '/constraints',       label: 'Constraints',       icon: <FiSliders size={15} />,  manager: false },
+  { to: '/constraints',       label: 'Constraints',       icon: <FiSliders size={15} />,      manager: false },
+  { to: '/availability',      label: 'Availability',      icon: <FiCheckSquare size={15} />,  manager: false },
   { to: '/leave-requests',    label: 'Leave Requests',    icon: <FiClock size={15} />,    manager: false },
   { to: '/swap-marketplace',  label: 'Swap Marketplace',  icon: <FiRepeat size={15} />,   manager: false },
   { to: '/manage/schedule',   label: 'Manage Schedule',   icon: <FiSettings size={15} />, manager: true  },

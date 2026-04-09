@@ -36,6 +36,7 @@ def create_user(
         last_name=payload.last_name,
         role=payload.role,
         department_id=payload.department_id,
+        employment_percentage=payload.employment_percentage,
     )
     db.add(user)
     db.commit()

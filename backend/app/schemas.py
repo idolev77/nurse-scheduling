@@ -1,6 +1,6 @@
 from datetime import date, datetime
 from typing import Optional, List
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, EmailStr, Field
 from app.models import RoleEnum, ShiftType, ConstraintType, RequestStatus, SwapRequestStatus
 
 
@@ -23,6 +23,7 @@ class UserCreate(BaseModel):
     last_name: str
     role: RoleEnum = RoleEnum.NURSE
     department_id: Optional[int] = None
+    employment_percentage: int = Field(default=100, ge=0, le=100)
 
 
 class UserOut(BaseModel):
@@ -32,6 +33,7 @@ class UserOut(BaseModel):
     last_name: str
     role: RoleEnum
     department_id: Optional[int] = None
+    employment_percentage: int = 100
     is_active: bool
 
     class Config:
@@ -44,6 +46,7 @@ class UserUpdate(BaseModel):
     role: Optional[RoleEnum] = None
     department_id: Optional[int] = None
     is_active: Optional[bool] = None
+    employment_percentage: Optional[int] = Field(default=None, ge=0, le=100)
 
 
 # ── Department ─────────────────────────────────────────
@@ -149,6 +152,65 @@ class ScheduleOut(BaseModel):
 class GenerateScheduleRequest(BaseModel):
     department_id: int
     week_start_date: date
+
+
+class ScheduleGenerateResult(BaseModel):
+    schedule: ScheduleOut
+    total_required: int = 0
+    total_assigned: int = 0
+    warnings: List[str] = []
+
+
+# ── Shift (schedulable slot) ─────────────────────
+class ShiftOut(BaseModel):
+    id: int
+    department_id: int
+    date: date
+    shift_type: ShiftType
+    required_staff: int
+
+    class Config:
+        from_attributes = True
+
+
+class ShiftUpdate(BaseModel):
+    required_staff: int = Field(ge=0)
+
+
+class GenerateShiftsRequest(BaseModel):
+    department_id: int
+    week_start_date: date
+
+
+# ── Nurse Shift Availability ────────────────────
+class AvailabilityCreate(BaseModel):
+    shift_id: int
+    capacity: int = Field(default=1, ge=1)
+    preference_level: int = Field(default=1, ge=1, le=2)
+
+
+class AvailabilityBulkItem(BaseModel):
+    shift_id: int
+    capacity: int = Field(default=1, ge=1)
+    preference_level: int = Field(default=1, ge=1, le=2)
+
+
+class AvailabilityBulkCreate(BaseModel):
+    items: List[AvailabilityBulkItem]
+
+
+class AvailabilityOut(BaseModel):
+    id: int
+    nurse_id: int
+    shift_id: int
+    capacity: int
+    preference_level: int
+    nurse_name: Optional[str] = None
+    shift_date: Optional[date] = None
+    shift_type: Optional[ShiftType] = None
+
+    class Config:
+        from_attributes = True
 
 
 # ── Swap Requests (Shift Swap Marketplace) ────────────

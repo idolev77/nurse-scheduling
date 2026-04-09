@@ -29,6 +29,7 @@ const EMPTY_FORM = {
   password: '',
   role: 'nurse',
   department_id: '',
+  employment_percentage: 100,
 };
 
 export default function ManageUsers() {
@@ -85,6 +86,7 @@ export default function ManageUsers() {
       const payload = {
         ...form,
         department_id: form.department_id ? Number(form.department_id) : null,
+        employment_percentage: Number(form.employment_percentage),
       };
       await api.post('/users/', payload);
       await reload();
@@ -157,6 +159,7 @@ export default function ManageUsers() {
                 <th>Email</th>
                 <th>Role</th>
                 <th>Department</th>
+                <th>Employment %</th>
                 <th>Status</th>
               </tr>
             </thead>
@@ -214,6 +217,27 @@ export default function ManageUsers() {
                   </td>
 
                   {/* Active toggle */}
+                  <td>
+                    <select
+                      className="field-select text-sm py-1.5 w-20"
+                      value={u.employment_percentage ?? 100}
+                      onChange={async (e) => {
+                        setActionError('');
+                        try {
+                          await api.put(`/users/${u.id}`, { employment_percentage: Number(e.target.value) });
+                          reload();
+                        } catch (err) {
+                          setActionError(err.response?.data?.detail || 'Failed to update');
+                        }
+                      }}
+                    >
+                      {[25, 50, 75, 80, 100].map((v) => (
+                        <option key={v} value={v}>{v}%</option>
+                      ))}
+                    </select>
+                  </td>
+
+                  {/* Status */}
                   <td>
                     <button
                       onClick={() => handleToggleActive(u.id, u.is_active)}
@@ -327,6 +351,19 @@ export default function ManageUsers() {
                     ))}
                   </select>
                 </div>
+              </div>
+
+              <div>
+                <label className="block text-xs font-medium text-slate-600 mb-1">Employment Percentage</label>
+                <select
+                  className="field-select"
+                  value={form.employment_percentage}
+                  onChange={(e) => setForm({ ...form, employment_percentage: e.target.value })}
+                >
+                  {[25, 50, 75, 80, 100].map((v) => (
+                    <option key={v} value={v}>{v}%</option>
+                  ))}
+                </select>
               </div>
 
               <div className="flex gap-3 pt-2">

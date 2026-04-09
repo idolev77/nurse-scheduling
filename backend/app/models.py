@@ -1,7 +1,8 @@
 import enum
 from datetime import datetime, date
 from sqlalchemy import (
-    Column, Integer, String, Date, DateTime, Enum, ForeignKey, Boolean, Text, Time
+    Column, Integer, String, Date, DateTime, Enum, ForeignKey, Boolean, Text, Time,
+    UniqueConstraint,
 )
 from sqlalchemy.orm import relationship
 from app.database import Base
@@ -48,6 +49,7 @@ class User(Base):
     last_name = Column(String(100), nullable=False)
     role = Column(Enum(RoleEnum), default=RoleEnum.NURSE, nullable=False)
     department_id = Column(Integer, ForeignKey("departments.id"), nullable=True)
+    employment_percentage = Column(Integer, default=100, nullable=False)
     is_active = Column(Boolean, default=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
@@ -58,6 +60,7 @@ class User(Base):
     swap_requests_offered = relationship("SwapRequest", back_populates="requester", foreign_keys="SwapRequest.requester_id")
     swap_requests_claimed = relationship("SwapRequest", back_populates="claimant", foreign_keys="SwapRequest.claimant_id")
     notifications = relationship("Notification", back_populates="user", foreign_keys="Notification.user_id")
+    availabilities = relationship("NurseShiftAvailability", back_populates="nurse")
 
 
 # ── Departments ────────────────────────────────────────
@@ -73,6 +76,7 @@ class Department(Base):
 
     nurses = relationship("User", back_populates="department")
     schedules = relationship("Schedule", back_populates="department")
+    shifts = relationship("Shift", back_populates="department")
 
 
 # ── Schedules ──────────────────────────────────────────
@@ -164,3 +168,38 @@ class Notification(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
     user = relationship("User", back_populates="notifications", foreign_keys=[user_id])
+
+
+# ── Shifts (schedulable shift slots) ───────────────────
+class Shift(Base):
+    __tablename__ = "shifts"
+    __table_args__ = (
+        UniqueConstraint("department_id", "date", "shift_type", name="uq_shift_dept_date_type"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    department_id = Column(Integer, ForeignKey("departments.id"), nullable=False)
+    date = Column(Date, nullable=False)
+    shift_type = Column(Enum(ShiftType), nullable=False)
+    required_staff = Column(Integer, default=2, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    department = relationship("Department", back_populates="shifts")
+    availability = relationship("NurseShiftAvailability", back_populates="shift", cascade="all, delete-orphan")
+
+
+# ── Nurse Shift Availability (flow-network edges) ─────
+class NurseShiftAvailability(Base):
+    __tablename__ = "nurse_shift_availability"
+    __table_args__ = (
+        UniqueConstraint("nurse_id", "shift_id", name="uq_nurse_shift_avail"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    nurse_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    shift_id = Column(Integer, ForeignKey("shifts.id"), nullable=False)
+    capacity = Column(Integer, default=1, nullable=False)
+    preference_level = Column(Integer, default=1, nullable=False)  # 1=preferred, 2=available
+
+    nurse = relationship("User", back_populates="availabilities")
+    shift = relationship("Shift", back_populates="availability")

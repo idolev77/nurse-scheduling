@@ -3,7 +3,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from app.database import get_db
 from app.models import Schedule, ShiftAssignment, User, RoleEnum
-from app.schemas import ScheduleOut, ShiftAssignmentOut, GenerateScheduleRequest
+from app.schemas import ScheduleOut, ShiftAssignmentOut, GenerateScheduleRequest, ScheduleGenerateResult
 from app.auth import get_current_user, require_role
 from app.scheduler import generate_schedule
 
@@ -57,17 +57,24 @@ def get_schedule(schedule_id: int, db: Session = Depends(get_db), current_user: 
     return _format_schedule(schedule, db)
 
 
-@router.post("/generate", response_model=ScheduleOut, status_code=201)
+@router.post("/generate", response_model=ScheduleGenerateResult, status_code=201)
 def generate(
     payload: GenerateScheduleRequest,
     db: Session = Depends(get_db),
     current_user: User = Depends(require_role(RoleEnum.HEAD_NURSE, RoleEnum.ADMIN)),
 ):
     try:
-        schedule = generate_schedule(db, payload.department_id, payload.week_start_date)
+        schedule, warnings, total_required, total_assigned = generate_schedule(
+            db, payload.department_id, payload.week_start_date
+        )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
-    return _format_schedule(schedule, db)
+    return ScheduleGenerateResult(
+        schedule=_format_schedule(schedule, db),
+        total_required=total_required,
+        total_assigned=total_assigned,
+        warnings=warnings,
+    )
 
 
 @router.put("/{schedule_id}/publish", response_model=ScheduleOut)
