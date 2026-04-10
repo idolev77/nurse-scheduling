@@ -1,6 +1,6 @@
 import { useAuth } from '../context/AuthContext';
 import { Link } from 'react-router-dom';
-import { FiCalendar, FiSliders, FiClock, FiUsers, FiSettings, FiArrowRight, FiActivity, FiRepeat } from 'react-icons/fi';
+import { FiCalendar, FiSliders, FiClock, FiUsers, FiSettings, FiArrowRight, FiActivity, FiRepeat, FiList } from 'react-icons/fi';
 
 const CARDS = [
   {
@@ -57,6 +57,14 @@ const CARDS = [
     title: 'Manage Users',
     description: 'Assign roles, departments, and manage staff accounts',
     gradient: 'from-indigo-500 to-blue-600',
+    manager: true,
+  },
+  {
+    to: '/manage/constraints',
+    icon: <FiList size={22} />,
+    title: 'Staff Constraints',
+    description: "View each nurse's weekly shift preferences and unavailability at a glance",
+    gradient: 'from-violet-500 to-pink-500',
     manager: true,
   },
 ];
