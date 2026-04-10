@@ -414,6 +414,8 @@ def generate_schedule(
 
     # ── Iterative optimisation loop ────────────────────
     best: _CandidateResult = _CandidateResult()   # score = -inf
+    iteration_logs: List[dict] = []
+    best_idx: int = 0
 
     for i in range(iterations):
         r_nurses, r_shifts, r_avail = _randomise_inputs(nurses, shifts, avail_edges)
@@ -421,8 +423,21 @@ def generate_schedule(
         candidate = _solve_once(r_nurses, r_shifts, r_avail, hard_blocks, shift_map)
         candidate.score = evaluate_schedule(candidate, shifts, nurses, avail_edges)
 
+        iteration_logs.append({
+            "iteration": i + 1,
+            "score": round(candidate.score, 2),
+            "assigned": candidate.total_assigned,
+            "required": candidate.total_required,
+            "is_best": False,
+        })
+
         if candidate.score > best.score:
             best = candidate
+            best_idx = i
+
+    # Mark the winning iteration
+    if iteration_logs:
+        iteration_logs[best_idx]["is_best"] = True
 
     # ── Persist winning schedule to DB ─────────────────
     existing = (
@@ -451,4 +466,4 @@ def generate_schedule(
 
     db.commit()
     db.refresh(schedule)
-    return schedule, best.warnings, best.total_required, best.total_assigned
+    return schedule, best.warnings, best.total_required, best.total_assigned, iteration_logs

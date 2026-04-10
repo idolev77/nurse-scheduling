@@ -64,7 +64,7 @@ def generate(
     current_user: User = Depends(require_role(RoleEnum.HEAD_NURSE, RoleEnum.ADMIN)),
 ):
     try:
-        schedule, warnings, total_required, total_assigned = generate_schedule(
+        schedule, warnings, total_required, total_assigned, iterations_log = generate_schedule(
             db, payload.department_id, payload.week_start_date
         )
     except ValueError as e:
@@ -74,6 +74,7 @@ def generate(
         total_required=total_required,
         total_assigned=total_assigned,
         warnings=warnings,
+        iterations_log=iterations_log,
     )
 
 

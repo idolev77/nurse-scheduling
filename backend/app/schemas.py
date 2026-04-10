@@ -154,11 +154,20 @@ class GenerateScheduleRequest(BaseModel):
     week_start_date: date
 
 
+class IterationLog(BaseModel):
+    iteration: int
+    score: float
+    assigned: int
+    required: int
+    is_best: bool = False
+
+
 class ScheduleGenerateResult(BaseModel):
     schedule: ScheduleOut
     total_required: int = 0
     total_assigned: int = 0
     warnings: List[str] = []
+    iterations_log: List[IterationLog] = []
 
 
 # ── Shift (schedulable slot) ─────────────────────

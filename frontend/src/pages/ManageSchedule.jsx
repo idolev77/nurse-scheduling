@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { format, startOfWeek, addDays, parseISO, isToday } from 'date-fns';
-import { FiCalendar, FiZap, FiCheckCircle, FiAlertCircle, FiSun, FiMoon, FiBriefcase } from 'react-icons/fi';
+import { FiCalendar, FiZap, FiCheckCircle, FiAlertCircle, FiSun, FiMoon, FiBriefcase, FiX, FiAward } from 'react-icons/fi';
 import api from '../api';
 import { useAuth } from '../context/AuthContext';
 
@@ -26,6 +26,8 @@ export default function ManageSchedule() {
   const [totalRequired, setTotalRequired] = useState(0);
   const [totalAssigned, setTotalAssigned] = useState(0);
   const [message, setMessage] = useState({ text: '', type: '' });
+  const [iterationsLog, setIterationsLog] = useState([]);
+  const [showIterationsModal, setShowIterationsModal] = useState(false);
 
   useEffect(() => {
     api.get('/departments/').then((res) => {
@@ -88,6 +90,8 @@ export default function ManageSchedule() {
       setWarnings(res.data.warnings || []);
       setTotalRequired(res.data.total_required || 0);
       setTotalAssigned(res.data.total_assigned || 0);
+      setIterationsLog(res.data.iterations_log || []);
+      setShowIterationsModal(true);
       const warnCount = (res.data.warnings || []).length;
       setMessage({
         text: warnCount > 0
@@ -121,6 +125,7 @@ export default function ManageSchedule() {
   };
 
   return (
+    <>
     <div className="animate-fade-in-up">
       {/* Page header */}
       <div className="page-header">
@@ -308,5 +313,103 @@ export default function ManageSchedule() {
         </div>
       )}
     </div>
+
+      {/* Iterations Modal */}
+      {showIterationsModal && iterationsLog.length > 0 && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm animate-fade-in-up">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg mx-4 overflow-hidden flex flex-col" style={{ maxHeight: '85vh' }}>
+            {/* Header */}
+            <div className="flex items-center justify-between px-5 py-4" style={{ background: 'linear-gradient(135deg, #0f172a 0%, #1e3a8a 60%, #0e7490 100%)' }}>
+              <div className="flex items-center gap-3">
+                <span className="inline-flex items-center justify-center w-8 h-8 rounded-lg bg-white/20">
+                  <FiZap size={16} className="text-white" />
+                </span>
+                <div>
+                  <h3 className="text-white font-semibold text-sm">Min-Cost Max-Flow</h3>
+                  <p className="text-sky-300 text-xs">{iterationsLog.length} iterations completed</p>
+                </div>
+              </div>
+              <button
+                onClick={() => setShowIterationsModal(false)}
+                className="text-white/60 hover:text-white transition-colors"
+              >
+                <FiX size={20} />
+              </button>
+            </div>
+
+            {/* Result banner */}
+            <div className={`px-5 py-3 flex items-center gap-2 text-sm font-medium ${
+              warnings.length > 0
+                ? 'bg-amber-50 border-b border-amber-200 text-amber-800'
+                : 'bg-emerald-50 border-b border-emerald-200 text-emerald-800'
+            }`}>
+              {warnings.length > 0 ? (
+                <FiAlertCircle size={15} className="shrink-0" />
+              ) : (
+                <FiCheckCircle size={15} className="shrink-0" />
+              )}
+              {warnings.length > 0
+                ? `Schedule generated with ${warnings.length} unfilled shift(s). Assigned ${totalAssigned}/${totalRequired} slots.`
+                : `Schedule generated successfully! All ${totalRequired} slots filled.`}
+            </div>
+
+            {/* Table */}
+            <div className="overflow-y-auto flex-1">
+              <table className="w-full text-sm">
+                <thead className="sticky top-0 bg-slate-50 border-b border-slate-200">
+                  <tr>
+                    <th className="px-4 py-2.5 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider w-16">#</th>
+                    <th className="px-4 py-2.5 text-center text-xs font-semibold text-slate-500 uppercase tracking-wider">Assigned</th>
+                    <th className="px-4 py-2.5 text-right text-xs font-semibold text-slate-500 uppercase tracking-wider">Score</th>
+                    <th className="px-4 py-2.5 text-center text-xs font-semibold text-slate-500 uppercase tracking-wider w-24">Status</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {iterationsLog.map((row) => (
+                    <tr
+                      key={row.iteration}
+                      className={row.is_best
+                        ? 'bg-emerald-50 ring-1 ring-inset ring-emerald-200'
+                        : 'hover:bg-slate-50'}
+                    >
+                      <td className={`px-4 py-2 font-mono text-xs ${row.is_best ? 'text-emerald-700 font-bold' : 'text-slate-400'}`}>
+                        {row.iteration}
+                      </td>
+                      <td className="px-4 py-2 text-center">
+                        <span className={`text-xs font-semibold ${
+                          row.assigned === row.required ? 'text-emerald-700' : 'text-amber-600'
+                        }`}>
+                          {row.assigned}/{row.required}
+                        </span>
+                      </td>
+                      <td className={`px-4 py-2 text-right font-mono text-xs ${row.is_best ? 'text-emerald-700 font-bold' : 'text-slate-600'}`}>
+                        {row.score.toLocaleString(undefined, { minimumFractionDigits: 1, maximumFractionDigits: 1 })}
+                      </td>
+                      <td className="px-4 py-2 text-center">
+                        {row.is_best ? (
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-700 text-xs font-semibold">
+                            <FiAward size={11} /> Selected
+                          </span>
+                        ) : null}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+
+            {/* Footer */}
+            <div className="px-5 py-3 border-t border-slate-100 flex justify-end">
+              <button
+                onClick={() => setShowIterationsModal(false)}
+                className="btn btn-primary text-sm px-5 py-2"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </>
   );
 }
