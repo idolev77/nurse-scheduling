@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo, useCallback } from 'react';
 import api from '../api';
 import {
-  FiTrash2, FiSliders, FiAlertCircle,
+  FiSliders, FiAlertCircle,
   FiChevronLeft, FiChevronRight, FiSave, FiCheckCircle,
 } from 'react-icons/fi';
 
@@ -16,17 +16,6 @@ const CONSTRAINT_TYPES = [
   { value: 'prefer_not',  label: 'Prefer Not'  },
   { value: 'prefer',      label: 'Prefer'      },
 ];
-
-const BADGE_MAP = {
-  cannot_work: 'badge-cannot',
-  prefer_not:  'badge-prefer-not',
-  prefer:      'badge-prefer',
-};
-const SHIFT_BADGE = {
-  morning:   'badge-morning',
-  afternoon: 'badge-afternoon',
-  night:     'badge-night',
-};
 
 const DAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 
@@ -145,11 +134,6 @@ export default function Constraints() {
     } finally {
       setLoading(false);
     }
-  };
-
-  const handleDelete = async (id) => {
-    await api.delete(`/constraints/${id}`);
-    fetchConstraints();
   };
 
   const todayStr = toDateStr(new Date());
@@ -283,60 +267,6 @@ export default function Constraints() {
             {loading ? 'Saving…' : 'Save Week Constraints'}
           </button>
         </div>
-      </div>
-
-      {/* ── All constraints list ─────────────────── */}
-      <div className="card overflow-hidden">
-        <div className="px-6 py-4 border-b border-slate-100">
-          <span className="font-semibold text-slate-800 text-sm">
-            All My Constraints
-            {constraints.length > 0 && (
-              <span className="ml-2 badge bg-slate-100 text-slate-600">{constraints.length}</span>
-            )}
-          </span>
-        </div>
-        <table className="data-table">
-          <thead>
-            <tr>
-              <th>Date</th>
-              <th>Shift</th>
-              <th>Type</th>
-              <th>Note</th>
-              <th></th>
-            </tr>
-          </thead>
-          <tbody>
-            {constraints.length === 0 ? (
-              <tr>
-                <td colSpan="5" className="px-5 py-12 text-center text-slate-400">
-                  No constraints yet — select preferences above and save.
-                </td>
-              </tr>
-            ) : (
-              constraints.map((c) => (
-                <tr key={c.id}>
-                  <td className="font-medium">{c.date}</td>
-                  <td><span className={SHIFT_BADGE[c.shift_type]}>{c.shift_type}</span></td>
-                  <td>
-                    <span className={BADGE_MAP[c.constraint_type]}>
-                      {c.constraint_type.replace('_', ' ')}
-                    </span>
-                  </td>
-                  <td className="text-slate-500">{c.note || <span className="text-slate-300">—</span>}</td>
-                  <td>
-                    <button
-                      onClick={() => handleDelete(c.id)}
-                      className="btn-danger-ghost"
-                      title="Delete constraint"
-                    >
-                      <FiTrash2 size={15} />
-                    </button>
-                  </td>
-                </tr>
-              ))
-            )}
-          </tbody>
-        </table>
       </div>
     </div>
   );
