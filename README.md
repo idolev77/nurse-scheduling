@@ -113,19 +113,50 @@ Accessible from the dashboard card → `/shift-summary`. Fetches `GET /api/shift
 
 ## Scheduling Algorithm
 
-Located in `backend/app/scheduler.py` — greedy constraint-satisfaction:
+Located in `backend/app/scheduler.py` — **Min-Cost Max-Flow** wrapped in an **Iterative Optimisation** loop with **hard-constraint repair**:
 
-1. Load all active `NURSE`-role users in the target department
-2. Build **hard blocks** — `CANNOT_WORK` constraints + days covered by **approved leave requests** → `(nurse_id, date, shift_type)` set
-3. Build **soft scores** — `PREFER_NOT` → `−10`, `PREFER` → `+5`
-4. Read minimum staffing requirements from department (`min_nurses_morning/afternoon/night`)
-5. Track **workload** per nurse (shifts already assigned this week)
-6. Apply **rest rule** — nurses who worked a night shift cannot be assigned morning the next day
-7. For each of the **7 days × 3 shifts**:
-   - Filter candidates (exclude hard-blocked, already assigned today, rest-rule violations)
-   - Score each candidate: `soft_score − workload × 3` (favours under-loaded nurses)
-   - Assign the top N nurses (N = minimum required for that shift)
-8. Delete any existing schedule for the same department + week; persist new `Schedule` + `ShiftAssignment` rows
+### Overview
+
+1. Load all active `NURSE`-role users in the target department.
+2. Build **static hard blocks** — `CANNOT_WORK` constraints + days covered by **approved leave requests** → `(nurse_id, date, shift_type)` set.
+3. Build **availability edges** — every nurse × every shift, with cost derived from preference level (`PREFER` → cost 0, default → cost 1, `PREFER_NOT` → cost 2).
+4. Run **50 Monte Carlo iterations** with shuffled inputs; for each:
+   a. Lightly randomise edge order and stochastically drop some `PREFER_NOT` edges to explore alternative solutions.
+   b. Call `_solve_with_constraints` (see below).
+   c. Score the candidate with `evaluate_schedule` (quota fill, preference bonuses, utilisation-variance penalty).
+5. Persist the **highest-scoring** feasible schedule to the database.
+
+### Hard-Constraint Repair Loop (`_solve_with_constraints`)
+
+Because a flow algorithm solves the entire graph simultaneously, inter-shift constraints (e.g. "no morning after night") cannot be encoded as simple edge costs. Instead, the solver uses an **iterative repair** approach (up to 10 rounds per iteration):
+
+```
+Solve flow network
+       ↓
+Detect constraint violations in result
+       ↓  violations found?
+  YES → add violating (nurse, date, shift) to hard_blocks → repeat
+  NO  → return feasible candidate
+```
+
+### Hard Constraints enforced (`_detect_constraint_violations`)
+
+| # | Rule | Enforcement |
+|---|------|-------------|
+| 1 | **24 h rest after Night** | Night on day D → block Morning & Afternoon on D+1 |
+| 2 | **8 h rest after Afternoon** | Afternoon on day D → block Morning on D+1 |
+| 3 | **Max 6 consecutive work-days** | 7th+ consecutive day → all shift types blocked |
+| 4 | **Max 2 night shifts per week** | 3rd+ night in the 7-day window → blocked |
+| 5 | **Max 2 consecutive night shifts** | 3rd+ consecutive night → blocked |
+
+### Scoring (`evaluate_schedule`)
+
+| Component | Weight |
+|-----------|--------|
+| Filled slot bonus | +100 per slot |
+| Unfilled slot penalty | −200 per slot |
+| Preferred assignment bonus | +10 per `PREFER` match |
+| Utilisation-variance penalty | −50 × variance |
 
 ---
 
@@ -345,9 +376,9 @@ The app will open at `http://localhost:5173`.
 ### For Head Nurses / Admins
 - **Generate Schedule** – Smart algorithm auto-generates weekly schedules considering:
   - Hard constraints (cannot work, approved leave)
+  - Labour-law rest rules (24 h after night, 8 h after afternoon, max 6 consecutive days, max 2 nights/week, max 2 consecutive nights)
   - Soft preferences (prefer / prefer not)
   - Workload balancing across nurses
-  - Rest rules (no morning after night shift)
   - Minimum staffing requirements per shift
 - **Publish Schedule** – Review drafts before publishing to nurses
 - **Manage Users** – Assign roles, departments, activate/deactivate accounts

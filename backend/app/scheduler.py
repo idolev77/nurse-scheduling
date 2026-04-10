@@ -183,7 +183,132 @@ def _randomise_inputs(
 
 
 # ────────────────────────────────────────────────────────────
-#  3. Single-iteration flow solve (pure, no DB)
+#  3. Hard-constraint detection & iterative repair
+# ────────────────────────────────────────────────────────────
+
+_MAX_REPAIR_ROUNDS = 10
+
+
+def _detect_constraint_violations(
+    assignments: List[dict],
+    week_start: date,
+    week_end: date,
+) -> Set[Tuple[int, date, ShiftType]]:
+    """
+    Scan *assignments* for labour-law violations and return a set of
+    ``(nurse_id, date, shift_type)`` tuples that must be blocked to
+    restore feasibility.
+
+    Hard constraints enforced
+    -------------------------
+    1. **24-h rest after Night**: cannot work Morning or Afternoon
+       the following day.
+    2. **8-h rest after Afternoon**: cannot work Morning the following
+       day.
+    3. **Max 6 consecutive work-days**: the 7th+ day in any
+       uninterrupted sequence is blocked.
+    4. **Max 2 night shifts per week** per nurse.
+    5. **Max 2 consecutive night shifts**: the 3rd+ consecutive night
+       is blocked.
+    """
+    blocks: Set[Tuple[int, date, ShiftType]] = set()
+
+    # Group by nurse
+    nurse_asgn: Dict[int, List[dict]] = {}
+    for a in assignments:
+        nurse_asgn.setdefault(a["nurse_id"], []).append(a)
+
+    for nid, asgns in nurse_asgn.items():
+        # day -> set of shift types worked
+        day_types: Dict[date, Set[ShiftType]] = {}
+        for a in asgns:
+            day_types.setdefault(a["date"], set()).add(a["shift_type"])
+
+        # ── 1. 24-h rest after Night ──────────────────────
+        for d, types in day_types.items():
+            if ShiftType.NIGHT in types:
+                nxt = d + timedelta(days=1)
+                if nxt <= week_end:
+                    nxt_types = day_types.get(nxt, set())
+                    if ShiftType.MORNING in nxt_types:
+                        blocks.add((nid, nxt, ShiftType.MORNING))
+                    if ShiftType.AFTERNOON in nxt_types:
+                        blocks.add((nid, nxt, ShiftType.AFTERNOON))
+
+        # ── 2. 8-h rest after Afternoon ──────────────────
+        for d, types in day_types.items():
+            if ShiftType.AFTERNOON in types:
+                nxt = d + timedelta(days=1)
+                if nxt <= week_end:
+                    if ShiftType.MORNING in day_types.get(nxt, set()):
+                        blocks.add((nid, nxt, ShiftType.MORNING))
+
+        # ── 3. Max 6 consecutive work-days ───────────────
+        sorted_days = sorted(day_types.keys())
+        if sorted_days:
+            run_start = 0
+            for i in range(1, len(sorted_days)):
+                if sorted_days[i] != sorted_days[i - 1] + timedelta(days=1):
+                    run_start = i
+                elif i - run_start + 1 > 6:
+                    for st in ShiftType:
+                        blocks.add((nid, sorted_days[i], st))
+
+        # ── 4. Max 2 night shifts per week ───────────────
+        night_days = sorted(
+            d for d, types in day_types.items() if ShiftType.NIGHT in types
+        )
+        if len(night_days) > 2:
+            for d in night_days[2:]:
+                blocks.add((nid, d, ShiftType.NIGHT))
+
+        # ── 5. Max 2 consecutive nights ──────────────────
+        for i in range(2, len(night_days)):
+            if (night_days[i] == night_days[i - 1] + timedelta(days=1)
+                    and night_days[i - 1] == night_days[i - 2] + timedelta(days=1)):
+                blocks.add((nid, night_days[i], ShiftType.NIGHT))
+
+    return blocks
+
+
+def _solve_with_constraints(
+    nurses: List[_NurseInfo],
+    shifts: List[_ShiftInfo],
+    avail_edges: List[_AvailEdge],
+    hard_blocks: Set[Tuple[int, date, ShiftType]],
+    shift_map: Dict[int, _ShiftInfo],
+    week_start: date,
+    week_end: date,
+) -> _CandidateResult:
+    """
+    Repeatedly solve the flow network, adding hard-constraint blocks
+    after each round until no violations remain (or the repair budget
+    is exhausted).
+    """
+    current_blocks = set(hard_blocks)
+    candidate = _CandidateResult()
+
+    for _ in range(_MAX_REPAIR_ROUNDS):
+        candidate = _solve_once(
+            nurses, shifts, avail_edges, current_blocks, shift_map,
+        )
+        violations = _detect_constraint_violations(
+            candidate.assignments, week_start, week_end,
+        )
+        if not violations:
+            break
+        current_blocks |= violations
+    else:
+        candidate.warnings.append(
+            "Hard-constraint repair did not fully converge within "
+            f"{_MAX_REPAIR_ROUNDS} rounds."
+        )
+
+    return candidate
+
+
+# ────────────────────────────────────────────────────────────
+#  4. Single-iteration flow solve (pure, no DB)
 # ────────────────────────────────────────────────────────────
 
 def _solve_once(
@@ -272,7 +397,7 @@ def _solve_once(
 
 
 # ────────────────────────────────────────────────────────────
-#  4. Public entry-point (called by the router)
+#  5. Public entry-point (called by the router)
 # ────────────────────────────────────────────────────────────
 
 _DEFAULT_ITERATIONS = 50
@@ -420,7 +545,10 @@ def generate_schedule(
     for i in range(iterations):
         r_nurses, r_shifts, r_avail = _randomise_inputs(nurses, shifts, avail_edges)
 
-        candidate = _solve_once(r_nurses, r_shifts, r_avail, hard_blocks, shift_map)
+        candidate = _solve_with_constraints(
+            r_nurses, r_shifts, r_avail, hard_blocks, shift_map,
+            week_start, week_end,
+        )
         candidate.score = evaluate_schedule(candidate, shifts, nurses, avail_edges)
 
         iteration_logs.append({
