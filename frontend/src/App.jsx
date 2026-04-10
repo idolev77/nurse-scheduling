@@ -10,7 +10,6 @@ import ManageSchedule from './pages/ManageSchedule';
 import ManageUsers from './pages/ManageUsers';
 import ShiftHoursSummaryPage from './pages/ShiftHoursSummaryPage';
 import SwapMarketplace from './pages/SwapMarketplace';
-import Availability from './pages/Availability';
 
 function PrivateRoute({ children }) {
   const { user, loading } = useAuth();
@@ -36,7 +35,6 @@ export default function App() {
           <Route path="/dashboard" element={<PrivateRoute><Dashboard /></PrivateRoute>} />
           <Route path="/schedule" element={<PrivateRoute><ScheduleView /></PrivateRoute>} />
           <Route path="/constraints" element={<PrivateRoute><Constraints /></PrivateRoute>} />
-          <Route path="/availability" element={<PrivateRoute><Availability /></PrivateRoute>} />
           <Route path="/leave-requests" element={<PrivateRoute><LeaveRequests /></PrivateRoute>} />
           <Route path="/shift-summary" element={<PrivateRoute><ShiftHoursSummaryPage /></PrivateRoute>} />
           <Route path="/swap-marketplace" element={<PrivateRoute><SwapMarketplace /></PrivateRoute>} />

@@ -27,7 +27,7 @@ from sqlalchemy.orm import Session
 
 from app.models import (
     User, Department, ShiftConstraint, LeaveRequest, ShiftAssignment,
-    Schedule, Shift, NurseShiftAvailability,
+    Schedule, Shift,
     ShiftType, ConstraintType, RequestStatus, RoleEnum,
 )
 
@@ -214,7 +214,8 @@ def _solve_once(
             continue
         nurse_node = f"nurse_{avail.nurse_id}"
         shift_node = f"shift_{avail.shift_id}"
-        cost = 0 if avail.preference_level == 1 else 1
+        # preference_level: 1=prefer (cost 0), 2=neutral (cost 1), 3=prefer_not (cost 2)
+        cost = avail.preference_level - 1
         G.add_edge(nurse_node, shift_node, capacity=avail.capacity, weight=cost)
 
     # Shift -> Sink edges
@@ -372,55 +373,44 @@ def generate_schedule(
                 hard_blocks.add((leave.nurse_id, d, st))
             d += timedelta(days=1)
 
-    # Availability
-    shift_ids = [s.id for s in shifts]
-    avail_orm = (
-        db.query(NurseShiftAvailability)
+    # Build availability edges from constraints only.
+    # Default: every nurse is available for every shift (preference_level=2, cost=1).
+    # PREFER constraint  → preference_level=1 (cost=0, algorithm favours)
+    # PREFER_NOT constraint → preference_level=3 (cost=2, algorithm avoids)
+    # CANNOT_WORK is already in hard_blocks and will be filtered in _solve_once.
+
+    soft_constraints = (
+        db.query(ShiftConstraint)
         .filter(
-            NurseShiftAvailability.shift_id.in_(shift_ids),
-            NurseShiftAvailability.nurse_id.in_(nurse_ids),
+            ShiftConstraint.nurse_id.in_(nurse_ids),
+            ShiftConstraint.date >= week_start,
+            ShiftConstraint.date <= week_end,
+            ShiftConstraint.constraint_type.in_([
+                ConstraintType.PREFER,
+                ConstraintType.PREFER_NOT,
+            ]),
         )
         .all()
     )
-    avail_edges: List[_AvailEdge] = [
-        _AvailEdge(
-            nurse_id=a.nurse_id,
-            shift_id=a.shift_id,
-            capacity=a.capacity,
-            preference_level=a.preference_level,
-        )
-        for a in avail_orm
-    ]
 
-    # If no explicit availability records exist at all, treat every nurse
-    # as available for every shift (preference_level=2 = "available if needed").
-    # Hard blocks (CANNOT_WORK / approved leave) are still enforced later.
-    if not avail_edges:
-        for nurse in nurses:
-            for shift in shifts:
-                avail_edges.append(
-                    _AvailEdge(
-                        nurse_id=nurse.id,
-                        shift_id=shift.id,
-                        capacity=1,
-                        preference_level=2,
-                    )
+    # Map (nurse_id, date, shift_type) -> preference_level override
+    pref_override: Dict[Tuple[int, date, ShiftType], int] = {}
+    for c in soft_constraints:
+        level = 1 if c.constraint_type == ConstraintType.PREFER else 3
+        pref_override[(c.nurse_id, c.date, c.shift_type)] = level
+
+    avail_edges: List[_AvailEdge] = []
+    for nurse in nurses:
+        for shift in shifts:
+            level = pref_override.get((nurse.id, shift.date, shift.shift_type), 2)
+            avail_edges.append(
+                _AvailEdge(
+                    nurse_id=nurse.id,
+                    shift_id=shift.id,
+                    capacity=1,
+                    preference_level=level,
                 )
-    else:
-        # Partial availability: for nurses who have at least one record,
-        # fill in missing shifts as available (preference_level=2).
-        explicit: Set[Tuple[int, int]] = {(e.nurse_id, e.shift_id) for e in avail_edges}
-        for nurse in nurses:
-            for shift in shifts:
-                if (nurse.id, shift.id) not in explicit:
-                    avail_edges.append(
-                        _AvailEdge(
-                            nurse_id=nurse.id,
-                            shift_id=shift.id,
-                            capacity=1,
-                            preference_level=2,
-                        )
-                    )
+            )
 
     # ── Iterative optimisation loop ────────────────────
     best: _CandidateResult = _CandidateResult()   # score = -inf
