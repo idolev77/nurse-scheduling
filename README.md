@@ -1,6 +1,6 @@
-# Smart Scheduling System for Nurses
+﻿# Smart Scheduling System for Nurses
 
-A full-stack web application that streamlines and optimizes nurse shift scheduling in medical departments. A smart greedy algorithm assigns nurses to shifts while respecting hard constraints, personal preferences, leave requests, rest rules, and minimum staffing requirements.
+A full-stack web application that streamlines and optimizes nurse shift scheduling in medical departments. A Min-Cost Max-Flow algorithm assigns nurses to shifts while respecting hard constraints, personal preferences, leave requests, rest rules, and minimum staffing requirements.
 
 ## Project Team
 - **Ido Levy**
@@ -45,7 +45,7 @@ cd backend
 pip install -r requirements.txt
 ```
 
-Create `backend/.env`: 
+Create `backend/.env`:
 ```env
 DATABASE_URL=sqlite:///./nurse_scheduling.db
 SECRET_KEY=your-secret-key-here
@@ -66,7 +66,7 @@ uvicorn app.main:app --reload
 ```bash
 cd frontend
 npm install
-npm run dev        # http://localhost:3000
+npm run dev        # http://localhost:5173
 ```
 
 ---
@@ -75,7 +75,7 @@ npm run dev        # http://localhost:3000
 
 | Role | Permissions |
 |------|-------------|
-| `nurse` | View own schedule, submit constraints & leave requests, view shift hours summary |
+| `nurse` | View own schedule, submit constraints & leave requests, swap shifts, view shift hours summary |
 | `head_nurse` | All nurse permissions + generate/publish schedules, review leave requests, manage users |
 | `admin` | Full access including user management and department configuration |
 
@@ -88,11 +88,13 @@ npm run dev        # http://localhost:3000
 - **View Schedule** — Weekly calendar with `< / >` navigation; today's column highlighted; personal shifts marked with a blue ring
 - **My Constraints** — Submit shift preferences (`Cannot Work`, `Prefer Not`, `Prefer`) by date and shift type, with optional notes; manage and delete them
 - **Leave Requests** — Submit date-range leave requests with a reason; track approval status
+- **Shift Swap Marketplace** — Offer your own shift for swap or claim an open offer from a colleague; instant transfer with automatic notifications
+- **Notifications** — Bell icon in the navbar shows unread notifications (swap confirmations, leave approvals, etc.); auto-polled every 30 s
 - **Shift Hours Summary** — Personal monthly analytics dashboard (see details below)
 
 ### For Head Nurses & Admins
-- **Manage Schedule** — Department + week selector; generate weekly schedules via algorithm; preview drafts before publishing
-- **Manage Users** — Inline role changes, department assignments, active/inactive toggling; modal form to add new users
+- **Manage Schedule** — Department + week selector; prepare shift slots; generate weekly schedules via algorithm; preview drafts before publishing
+- **Manage Users** — Inline role changes, department assignments, employment-percentage and active/inactive toggling; modal form to add new users
 - **Review Leave Requests** — Approve or reject leave requests submitted by nurses
 
 ### Shift Hours Summary Widget
@@ -119,7 +121,7 @@ Located in `backend/app/scheduler.py` — **Min-Cost Max-Flow** wrapped in an **
 
 1. Load all active `NURSE`-role users in the target department.
 2. Build **static hard blocks** — `CANNOT_WORK` constraints + days covered by **approved leave requests** → `(nurse_id, date, shift_type)` set.
-3. Build **availability edges** — every nurse × every shift, with cost derived from preference level (`PREFER` → cost 0, default → cost 1, `PREFER_NOT` → cost 2).
+3. Build **availability edges** — every nurse × every shift, with cost derived from `ShiftConstraint` preference level (`PREFER` → cost 0, default → cost 1, `PREFER_NOT` → cost 2).
 4. Run **50 Monte Carlo iterations** with shuffled inputs; for each:
    a. Lightly randomise edge order and stochastically drop some `PREFER_NOT` edges to explore alternative solutions.
    b. Call `_solve_with_constraints` (see below).
@@ -157,6 +159,7 @@ Detect constraint violations in result
 | Unfilled slot penalty | −200 per slot |
 | Preferred assignment bonus | +10 per `PREFER` match |
 | Utilisation-variance penalty | −50 × variance |
+| Hard-constraint violation penalty | −10 000 per violation |
 
 ---
 
@@ -205,6 +208,36 @@ Detect constraint violations in result
 | GET | `/api/schedules/{id}` | Any | Get single schedule |
 | POST | `/api/schedules/generate` | head_nurse / admin | Auto-generate weekly schedule |
 | PUT | `/api/schedules/{id}/publish` | head_nurse / admin | Publish a draft schedule |
+
+### Shifts — `/api/shifts`
+| Method | Endpoint | Auth | Description |
+|--------|----------|------|-------------|
+| POST | `/api/shifts/generate-week` | head_nurse / admin | Create 21 shift slots for a 7-day week (idempotent) |
+| GET | `/api/shifts/` | Any | List shifts; `?department_id=&week_start=` filters |
+| PUT | `/api/shifts/{id}` | head_nurse / admin | Update `required_staff` for a specific shift slot |
+
+### Availability — `/api/availability`
+| Method | Endpoint | Auth | Description |
+|--------|----------|------|-------------|
+| GET | `/api/availability/` | Any | Nurses see own; managers see all; `?shift_id=`, `?department_id=`, `?week_start=` |
+| POST | `/api/availability/` | Any | Submit or update availability for a single shift |
+| POST | `/api/availability/bulk` | Any | Submit availability for multiple shifts at once |
+| DELETE | `/api/availability/{id}` | Any | Remove own availability entry |
+
+### Swap Requests — `/api/swap-requests`
+| Method | Endpoint | Auth | Description |
+|--------|----------|------|-------------|
+| POST | `/api/swap-requests` | Any | Offer a shift for swap |
+| GET | `/api/swap-requests` | Any | List open swap requests (own + others in same department) |
+| POST | `/api/swap-requests/{id}/claim` | Any | Claim an open swap offer (instant transfer) |
+| DELETE | `/api/swap-requests/{id}` | Any | Cancel own open offer |
+
+### Notifications — `/api/notifications`
+| Method | Endpoint | Auth | Description |
+|--------|----------|------|-------------|
+| GET | `/api/notifications` | Any | List last 50 notifications for current user |
+| GET | `/api/notifications/unread-count` | Any | Returns `{ "count": N }` |
+| POST | `/api/notifications/mark-all-read` | Any | Mark all notifications as read |
 
 ### Shift Summary — `/api/shift-summary`
 | Method | Endpoint | Auth | Description |
@@ -255,11 +288,10 @@ Detect constraint violations in result
 │       ├── main.py          # FastAPI app, CORS, router registration
 │       ├── config.py        # Environment variables (DATABASE_URL, SECRET_KEY, etc.)
 │       ├── database.py      # SQLAlchemy engine, SessionLocal, Base, get_db()
-│       ├── models.py        # ORM models: User, Department, Schedule, ShiftAssignment,
-│       │                    #             ShiftConstraint, LeaveRequest + enums
+│       ├── models.py        # ORM models + enums (see Database Models below)
 │       ├── schemas.py       # Pydantic request/response schemas
 │       ├── auth.py          # JWT creation/verification, bcrypt, FastAPI dependencies
-│       ├── scheduler.py     # Greedy schedule generation algorithm
+│       ├── scheduler.py     # Min-Cost Max-Flow schedule generation algorithm
 │       └── routers/
 │           ├── auth.py
 │           ├── users.py
@@ -267,6 +299,10 @@ Detect constraint violations in result
 │           ├── constraints.py
 │           ├── leave_requests.py
 │           ├── schedules.py
+│           ├── shifts.py
+│           ├── availability.py
+│           ├── swap_requests.py
+│           ├── notifications.py
 │           └── shift_summary.py
 └── frontend/
     ├── Dockerfile
@@ -282,7 +318,7 @@ Detect constraint violations in result
         ├── context/
         │   └── AuthContext.jsx
         ├── components/
-        │   ├── Navbar.jsx
+        │   ├── Navbar.jsx          # Top nav; notification bell with unread badge
         │   └── ShiftHoursSummary.jsx
         └── pages/
             ├── Login.jsx
@@ -293,7 +329,9 @@ Detect constraint violations in result
             ├── LeaveRequests.jsx
             ├── ManageSchedule.jsx
             ├── ManageUsers.jsx
-            └── ShiftHoursSummaryPage.jsx
+            ├── ShiftHoursSummaryPage.jsx
+            ├── SwapMarketplace.jsx
+            └── Availability.jsx
 ```
 
 ---
@@ -302,178 +340,18 @@ Detect constraint violations in result
 
 | Model | Table | Notable Fields |
 |-------|-------|---------------|
-| `User` | `users` | `email`, `hashed_password`, `first_name`, `last_name`, `role`, `department_id`, `is_active` |
+| `User` | `users` | `email`, `hashed_password`, `first_name`, `last_name`, `role`, `department_id`, `employment_percentage`, `is_active` |
 | `Department` | `departments` | `name`, `min_nurses_morning/afternoon/night` |
 | `Schedule` | `schedules` | `department_id`, `week_start_date`, `is_published` |
 | `ShiftAssignment` | `shift_assignments` | `schedule_id`, `nurse_id`, `date`, `shift_type` |
 | `ShiftConstraint` | `shift_constraints` | `nurse_id`, `date`, `shift_type`, `constraint_type`, `note` |
 | `LeaveRequest` | `leave_requests` | `nurse_id`, `start_date`, `end_date`, `reason`, `status`, `reviewed_by` |
+| `Shift` | `shifts` | `department_id`, `date`, `shift_type`, `required_staff` — unique per (dept, date, type) |
+| `NurseShiftAvailability` | `nurse_shift_availability` | `nurse_id`, `shift_id`, `capacity`, `preference_level` — unique per (nurse, shift) |
+| `SwapRequest` | `swap_requests` | `shift_assignment_id`, `requester_id`, `claimant_id`, `status`, `note`, `resolved_at` |
+| `Notification` | `notifications` | `user_id`, `message`, `is_read` |
 
 **Shift types:** `morning` (07–15), `afternoon` (15–23), `night` (23–07)  
 **Constraint types:** `cannot_work`, `prefer_not`, `prefer`  
-**Leave/request statuses:** `pending`, `approved`, `rejected`
-
-
-## Quick Start
-
-### Docker (recommended)
-
-```bash
-docker compose up --build
-```
-
-The app will be available at `http://localhost:80`.
-
-### Manual Setup
-
-#### Backend
-
-```bash
-cd backend
-pip install -r requirements.txt
-```
-
-Create a `.env` file in the `backend/` folder:
-```env
-DATABASE_URL=sqlite:///./nurse_scheduling.db
-SECRET_KEY=your-secret-key-here
-ACCESS_TOKEN_EXPIRE_MINUTES=480
-```
-
-Start the server:
-```bash
-uvicorn app.main:app --reload
-```
-
-The API will be available at `http://localhost:8000` with automatic docs at `http://localhost:8000/docs`.
-
-#### Frontend
-
-```bash
-cd frontend
-npm install
-npm run dev
-```
-
-The app will open at `http://localhost:5173`.
-
----
-
-## Features
-
-### For Nurses
-- **View Schedule** – Interactive weekly calendar showing shift assignments
-- **Submit Constraints** – Mark dates/shifts as "Cannot Work", "Prefer Not", or "Prefer"
-- **Leave Requests** – Submit time-off requests with date range and reason
-- **Shift Hours Summary** – Personal monthly dashboard with:
-  - Total hours worked vs. effective monthly quota
-  - Quota automatically adjusted for approved leave days
-  - Donut chart showing completion percentage
-  - Bar chart showing weekly hours distribution
-  - Shift-type breakdown (Morning / Afternoon / Night)
-  - Smart statistics: average hours per shift, most frequent shift type, comparison to previous month
-
-### For Head Nurses / Admins
-- **Generate Schedule** – Smart algorithm auto-generates weekly schedules considering:
-  - Hard constraints (cannot work, approved leave)
-  - Labour-law rest rules (24 h after night, 8 h after afternoon, max 6 consecutive days, max 2 nights/week, max 2 consecutive nights)
-  - Soft preferences (prefer / prefer not)
-  - Workload balancing across nurses
-  - Minimum staffing requirements per shift
-- **Publish Schedule** – Review drafts before publishing to nurses
-- **Manage Users** – Assign roles, departments, activate/deactivate accounts
-- **Review Leave Requests** – Approve or reject time-off requests
-
----
-
-## API Endpoints
-
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| POST | `/api/auth/register` | Register new user |
-| POST | `/api/auth/login` | Login (returns JWT) |
-| GET | `/api/auth/me` | Get current user |
-| GET | `/api/users/` | List users (managers) |
-| PUT | `/api/users/{id}` | Update user (admin) |
-| GET/POST | `/api/departments/` | List/create departments |
-| GET/POST | `/api/constraints/` | List/create shift constraints |
-| DELETE | `/api/constraints/{id}` | Delete constraint |
-| GET/POST | `/api/leave-requests/` | List/create leave requests |
-| PUT | `/api/leave-requests/{id}/review` | Approve/reject leave |
-| GET | `/api/schedules/` | List schedules |
-| POST | `/api/schedules/generate` | Generate schedule |
-| PUT | `/api/schedules/{id}/publish` | Publish schedule |
-| GET | `/api/shift-summary/me` | Monthly shift-hours summary for current user |
-
-### Shift Summary Response (`GET /api/shift-summary/me`)
-
-```json
-{
-  "year": 2026,
-  "month": 4,
-  "monthly_quota": 160,
-  "effective_quota": 136,
-  "leave_days": 3,
-  "leave_hours": 24,
-  "total_hours": 80,
-  "hours_remaining": 56,
-  "completion_pct": 58.8,
-  "shifts_count": 10,
-  "avg_hours_per_shift": 8.0,
-  "most_frequent_shift": "morning",
-  "shift_breakdown": {
-    "morning":   { "count": 6, "hours": 48 },
-    "afternoon": { "count": 3, "hours": 24 },
-    "night":     { "count": 1, "hours": 8  }
-  },
-  "weekly_distribution": [
-    { "week": 1, "label": "Week 1", "hours": 24 },
-    { "week": 2, "label": "Week 2", "hours": 16 }
-  ],
-  "prev_month_comparison": {
-    "prev_total_hours": 96,
-    "prev_effective_quota": 160,
-    "change_hours": -16,
-    "change_pct": -16.7
-  }
-}
-```
-
-Optional query params: `?year=2026&month=3`
-
----
-
-## Scheduling Algorithm
-
-The system uses a **greedy constraint-satisfaction** approach:
-
-1. Collects all **hard constraints** (cannot work + approved leave days)
-2. Collects **soft constraints** (preferences with weighted scores)
-3. For each day × shift combination:
-   - Filters out blocked nurses
-   - Enforces rest rules (no morning shift after a night shift)
-   - Prevents double-shifts on the same day
-   - Scores candidates: `preference_score - (workload × 3)`
-   - Assigns top-scoring nurses up to the minimum staffing requirement
-
-This ensures fair distribution while respecting both mandatory and preferred constraints.
-
----
-
-## Database Configuration
-
-To connect to an external database (e.g., PostgreSQL), update the `DATABASE_URL` in `.env`:
-
-```env
-DATABASE_URL=postgresql://user:password@host:5432/dbname
-```
-
----
-
-## Roles
-
-| Role | Permissions |
-|------|------------|
-| `nurse` | View own schedule, submit constraints & leave requests |
-| `head_nurse` | All nurse permissions + generate/publish schedules, review leave, view all users |
-| `admin` | Full system access including user management |
+**Leave / request statuses:** `pending`, `approved`, `rejected`  
+**Swap request statuses:** `open`, `claimed`, `cancelled`
