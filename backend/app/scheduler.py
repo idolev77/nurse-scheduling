@@ -88,6 +88,7 @@ _W_FILLED_SLOT   =  100     # bonus per filled slot
 _W_UNFILLED_SLOT = -200     # penalty per unfilled slot
 _W_PREF1_BONUS   =   10     # bonus per preferred assignment
 _W_VARIANCE_PEN  = - 50     # penalty multiplier for utilisation variance
+_W_VIOLATION_PEN = -10000   # massive penalty per hard-constraint violation
 
 
 def evaluate_schedule(
@@ -145,6 +146,23 @@ def evaluate_schedule(
         mean_u = sum(utilisation_rates) / len(utilisation_rates)
         variance = sum((u - mean_u) ** 2 for u in utilisation_rates) / len(utilisation_rates)
         score += _W_VARIANCE_PEN * variance
+
+    # --- hard-constraint violation penalty (safety net) ---
+    violation_count = 0
+    nurse_day_map: Dict[int, Dict[date, Set]] = {}
+    for a in candidate.assignments:
+        nurse_day_map.setdefault(a["nurse_id"], {}).setdefault(a["date"], set()).add(a["shift_type"])
+    for nid, day_map in nurse_day_map.items():
+        for d, types in day_map.items():
+            nxt = d + timedelta(days=1)
+            nxt_types = day_map.get(nxt, set())
+            if ShiftType.NIGHT in types:
+                if ShiftType.MORNING in nxt_types or ShiftType.AFTERNOON in nxt_types:
+                    violation_count += 1
+            if ShiftType.AFTERNOON in types:
+                if ShiftType.MORNING in nxt_types:
+                    violation_count += 1
+    score += violation_count * _W_VIOLATION_PEN
 
     return score
 
@@ -218,30 +236,31 @@ def _detect_constraint_violations(
     for a in assignments:
         nurse_asgn.setdefault(a["nurse_id"], []).append(a)
 
+    all_week_dates = [week_start + timedelta(days=i) for i in range(7)]
+
     for nid, asgns in nurse_asgn.items():
         # day -> set of shift types worked
         day_types: Dict[date, Set[ShiftType]] = {}
         for a in asgns:
             day_types.setdefault(a["date"], set()).add(a["shift_type"])
 
-        # ── 1. 24-h rest after Night ──────────────────────
+        # ── 1. 24-h rest after Night (proactive) ─────────
+        #    Block Morning AND Afternoon the next day whenever a
+        #    Night is assigned, even if those shifts are not yet
+        #    in the current solution.
         for d, types in day_types.items():
             if ShiftType.NIGHT in types:
                 nxt = d + timedelta(days=1)
                 if nxt <= week_end:
-                    nxt_types = day_types.get(nxt, set())
-                    if ShiftType.MORNING in nxt_types:
-                        blocks.add((nid, nxt, ShiftType.MORNING))
-                    if ShiftType.AFTERNOON in nxt_types:
-                        blocks.add((nid, nxt, ShiftType.AFTERNOON))
+                    blocks.add((nid, nxt, ShiftType.MORNING))
+                    blocks.add((nid, nxt, ShiftType.AFTERNOON))
 
-        # ── 2. 8-h rest after Afternoon ──────────────────
+        # ── 2. 8-h rest after Afternoon (proactive) ──────
         for d, types in day_types.items():
             if ShiftType.AFTERNOON in types:
                 nxt = d + timedelta(days=1)
                 if nxt <= week_end:
-                    if ShiftType.MORNING in day_types.get(nxt, set()):
-                        blocks.add((nid, nxt, ShiftType.MORNING))
+                    blocks.add((nid, nxt, ShiftType.MORNING))
 
         # ── 3. Max 6 consecutive work-days ───────────────
         sorted_days = sorted(day_types.keys())
@@ -250,19 +269,36 @@ def _detect_constraint_violations(
             for i in range(1, len(sorted_days)):
                 if sorted_days[i] != sorted_days[i - 1] + timedelta(days=1):
                     run_start = i
-                elif i - run_start + 1 > 6:
-                    for st in ShiftType:
-                        blocks.add((nid, sorted_days[i], st))
+                else:
+                    run_length = i - run_start + 1
+                    if run_length > 6:
+                        for st in ShiftType:
+                            blocks.add((nid, sorted_days[i], st))
+                    if run_length >= 6:
+                        nxt = sorted_days[i] + timedelta(days=1)
+                        if nxt <= week_end:
+                            for st in ShiftType:
+                                blocks.add((nid, nxt, st))
 
-        # ── 4. Max 2 night shifts per week ───────────────
+        # ── 4. Max 2 night shifts per week (proactive) ───
+        #    Once a nurse has 2 nights, block every other night
+        #    date in the week so the solver cannot pick a 3rd.
         night_days = sorted(
             d for d, types in day_types.items() if ShiftType.NIGHT in types
         )
-        if len(night_days) > 2:
-            for d in night_days[2:]:
-                blocks.add((nid, d, ShiftType.NIGHT))
+        if len(night_days) >= 2:
+            kept = set(night_days[:2])
+            for d_iter in all_week_dates:
+                if d_iter not in kept:
+                    blocks.add((nid, d_iter, ShiftType.NIGHT))
 
-        # ── 5. Max 2 consecutive nights ──────────────────
+        # ── 5. Max 2 consecutive nights (proactive) ──────
+        #    After 2 consecutive nights, block the 3rd night.
+        for i in range(1, len(night_days)):
+            if night_days[i] == night_days[i - 1] + timedelta(days=1):
+                nxt = night_days[i] + timedelta(days=1)
+                if nxt <= week_end:
+                    blocks.add((nid, nxt, ShiftType.NIGHT))
         for i in range(2, len(night_days)):
             if (night_days[i] == night_days[i - 1] + timedelta(days=1)
                     and night_days[i - 1] == night_days[i - 2] + timedelta(days=1)):
@@ -292,12 +328,13 @@ def _solve_with_constraints(
         candidate = _solve_once(
             nurses, shifts, avail_edges, current_blocks, shift_map,
         )
-        violations = _detect_constraint_violations(
+        implied_blocks = _detect_constraint_violations(
             candidate.assignments, week_start, week_end,
         )
-        if not violations:
+        new_blocks = implied_blocks - current_blocks
+        if not new_blocks:
             break
-        current_blocks |= violations
+        current_blocks |= new_blocks
     else:
         candidate.warnings.append(
             "Hard-constraint repair did not fully converge within "

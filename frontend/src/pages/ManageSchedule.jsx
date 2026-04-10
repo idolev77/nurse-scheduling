@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { format, startOfWeek, addDays, parseISO, isToday } from 'date-fns';
-import { FiCalendar, FiZap, FiCheckCircle, FiAlertCircle, FiSun, FiMoon, FiBriefcase, FiX, FiAward } from 'react-icons/fi';
+import { FiCalendar, FiZap, FiCheckCircle, FiAlertCircle, FiSun, FiMoon, FiBriefcase, FiX, FiAward, FiShare2 } from 'react-icons/fi';
 import api from '../api';
 import { useAuth } from '../context/AuthContext';
 
@@ -9,6 +9,229 @@ const SHIFTS = [
   { key: 'afternoon', label: 'Afternoon', time: '15:00–23:00', icon: FiBriefcase, badge: 'badge-afternoon', row: 'bg-orange-50/40' },
   { key: 'night',     label: 'Night',     time: '23:00–07:00', icon: FiMoon,    badge: 'badge-night',     row: 'bg-violet-50/40' },
 ];
+
+// ─────────────────────────────────────────────────────────
+//  Flow Network Visualisation (pure SVG, no extra deps)
+// ─────────────────────────────────────────────────────────
+const FLOW_SHIFT_COLORS = {
+  morning:   { fill: '#fffbeb', stroke: '#f59e0b', text: '#92400e', edge: '#f59e0b' },
+  afternoon: { fill: '#fff7ed', stroke: '#f97316', text: '#9a3412', edge: '#f97316' },
+  night:     { fill: '#f5f3ff', stroke: '#8b5cf6', text: '#4c1d95', edge: '#8b5cf6' },
+};
+
+function FlowNetworkDiagram({ assignments }) {
+  if (!assignments || assignments.length === 0) return null;
+
+  const nurseMap = new Map();
+  const shiftMap = new Map();
+  const edges    = [];
+
+  assignments.forEach((a) => {
+    if (!nurseMap.has(a.nurse_id))
+      nurseMap.set(a.nurse_id, { id: a.nurse_id, name: a.nurse_name || `#${a.nurse_id}` });
+    const sk = `${a.date}|${a.shift_type}`;
+    if (!shiftMap.has(sk))
+      shiftMap.set(sk, { key: sk, date: a.date, type: a.shift_type });
+    edges.push({ nurseId: a.nurse_id, shiftKey: sk, type: a.shift_type });
+  });
+
+  const nurses = [...nurseMap.values()];
+  const shifts = [...shiftMap.values()].sort((a, b) => {
+    if (a.date !== b.date) return a.date.localeCompare(b.date);
+    const o = { morning: 0, afternoon: 1, night: 2 };
+    return o[a.type] - o[b.type];
+  });
+
+  const NURSE_H = 26, NURSE_W = 108, NURSE_GAP = 8;
+  const SHIFT_H = 26, SHIFT_W = 128, SHIFT_GAP = 8;
+  const NODE_RX  = 7;
+  const PAD_V    = 40;
+  const SVG_W    = 720;
+
+  const nurseAreaH = nurses.length * (NURSE_H + NURSE_GAP) - NURSE_GAP;
+  const shiftAreaH = shifts.length * (SHIFT_H + SHIFT_GAP) - SHIFT_GAP;
+  const contentH   = Math.max(nurseAreaH, shiftAreaH, 120);
+  const SVG_H      = contentH + PAD_V * 2;
+
+  const COL_SRC   = 38;
+  const COL_NURSE = 96;
+  const COL_SHIFT = SVG_W - 96 - SHIFT_W;  // 496
+  const COL_SINK  = SVG_W - 38;             // 682
+  const MID_Y     = SVG_H / 2;
+
+  const getNurseY = (id) => {
+    const i = nurses.findIndex((n) => n.id === id);
+    return PAD_V + (contentH - nurseAreaH) / 2 + i * (NURSE_H + NURSE_GAP) + NURSE_H / 2;
+  };
+  const getShiftY = (key) => {
+    const i = shifts.findIndex((s) => s.key === key);
+    return PAD_V + (contentH - shiftAreaH) / 2 + i * (SHIFT_H + SHIFT_GAP) + SHIFT_H / 2;
+  };
+  const cubic = (x1, y1, x2, y2) => {
+    const mx = (x1 + x2) / 2;
+    return `M${x1},${y1} C${mx},${y1} ${mx},${y2} ${x2},${y2}`;
+  };
+
+  return (
+    <div className="mt-8 section-card">
+      {/* Header */}
+      <div className="flex items-center gap-3 mb-1">
+        <span className="inline-flex items-center justify-center w-9 h-9 rounded-xl bg-gradient-to-br from-blue-600 to-cyan-500 text-white shadow">
+          <FiShare2 size={16} />
+        </span>
+        <div>
+          <h2 className="section-title mb-0">Flow Network — Selected Schedule</h2>
+          <p className="text-xs text-slate-400 mt-0.5">
+            Solid edges&nbsp;= assigned (flow&nbsp;=&nbsp;1) · Dashed&nbsp;= capacity only (flow&nbsp;=&nbsp;0)
+          </p>
+        </div>
+      </div>
+
+      {/* Legend */}
+      <div className="flex flex-wrap items-center gap-2 mb-4 mt-3">
+        {Object.entries(FLOW_SHIFT_COLORS).map(([type, c]) => (
+          <span
+            key={type}
+            className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold border"
+            style={{ background: c.fill, borderColor: c.stroke, color: c.text }}
+          >
+            <span style={{ width: 18, height: 3, background: c.edge, display: 'inline-block', borderRadius: 2 }} />
+            {type.charAt(0).toUpperCase() + type.slice(1)}
+          </span>
+        ))}
+        <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium border border-slate-200 bg-white text-slate-400">
+          <svg width="18" height="6" style={{ display: 'inline-block' }}>
+            <line x1="0" y1="3" x2="18" y2="3" stroke="#94a3b8" strokeWidth="1.5" strokeDasharray="3,2" />
+          </svg>
+          Capacity (flow = 0)
+        </span>
+      </div>
+
+      {/* Diagram */}
+      <div className="overflow-x-auto rounded-2xl border border-slate-100" style={{ background: '#f8fafc' }}>
+        <svg
+          viewBox={`0 0 ${SVG_W} ${SVG_H}`}
+          width="100%"
+          style={{ display: 'block', minHeight: 180 }}
+          xmlns="http://www.w3.org/2000/svg"
+        >
+          <defs>
+            <linearGradient id="fn-src" x1="0%" y1="0%" x2="100%" y2="100%">
+              <stop offset="0%" stopColor="#1e40af" />
+              <stop offset="100%" stopColor="#0e7490" />
+            </linearGradient>
+            <linearGradient id="fn-snk" x1="0%" y1="0%" x2="100%" y2="100%">
+              <stop offset="0%" stopColor="#0e7490" />
+              <stop offset="100%" stopColor="#0f766e" />
+            </linearGradient>
+            <linearGradient id="fn-nurse" x1="0%" y1="0%" x2="100%" y2="100%">
+              <stop offset="0%" stopColor="#1e3a8a" />
+              <stop offset="100%" stopColor="#1d4ed8" />
+            </linearGradient>
+            <filter id="fn-shadow" x="-10%" y="-20%" width="120%" height="140%">
+              <feDropShadow dx="0" dy="1.5" stdDeviation="2" floodColor="#00000018" />
+            </filter>
+          </defs>
+
+          {/* Background */}
+          <rect width={SVG_W} height={SVG_H} fill="#f8fafc" />
+
+          {/* Column header labels */}
+          {[
+            [COL_SRC,                 'SOURCE'],
+            [COL_NURSE + NURSE_W / 2, 'NURSES'],
+            [COL_SHIFT + SHIFT_W / 2, 'SHIFT SLOTS'],
+            [COL_SINK,                'SINK'],
+          ].map(([x, lbl]) => (
+            <text key={lbl} x={x} y={30} textAnchor="middle"
+              fontSize="8" fontWeight="700" fill="#cbd5e1" letterSpacing="1.2">
+              {lbl}
+            </text>
+          ))}
+
+          {/* Column dividers */}
+          {[COL_NURSE - 18, COL_SHIFT + SHIFT_W + 18].map((x) => (
+            <line key={x} x1={x} y1={38} x2={x} y2={SVG_H - 12}
+              stroke="#e2e8f0" strokeWidth="1" strokeDasharray="4,5" />
+          ))}
+
+          {/* Source → Nurse capacity edges (dashed grey) */}
+          {nurses.map((n) => (
+            <path key={`sn-${n.id}`}
+              d={cubic(COL_SRC + 24, MID_Y, COL_NURSE, getNurseY(n.id))}
+              fill="none" stroke="#94a3b8" strokeWidth="1.4"
+              strokeDasharray="5,4" opacity="0.5" />
+          ))}
+
+          {/* Shift → Sink capacity edges (dashed, shift-coloured) */}
+          {shifts.map((s) => (
+            <path key={`st-${s.key}`}
+              d={cubic(COL_SHIFT + SHIFT_W, getShiftY(s.key), COL_SINK - 24, MID_Y)}
+              fill="none" stroke={FLOW_SHIFT_COLORS[s.type].edge}
+              strokeWidth="1.4" strokeDasharray="5,4" opacity="0.4" />
+          ))}
+
+          {/* Nurse → Shift assignment edges (solid, coloured by type) */}
+          {edges.map((e, i) => (
+            <path key={`e-${i}`}
+              d={cubic(COL_NURSE + NURSE_W, getNurseY(e.nurseId), COL_SHIFT, getShiftY(e.shiftKey))}
+              fill="none" stroke={FLOW_SHIFT_COLORS[e.type].edge}
+              strokeWidth="2.5" opacity="0.88" />
+          ))}
+
+          {/* Source node */}
+          <circle cx={COL_SRC} cy={MID_Y} r="18" fill="url(#fn-src)" filter="url(#fn-shadow)" />
+          <text x={COL_SRC} y={MID_Y + 4} textAnchor="middle"
+            fontSize="12" fontWeight="800" fill="white">S</text>
+
+          {/* Sink node */}
+          <circle cx={COL_SINK} cy={MID_Y} r="18" fill="url(#fn-snk)" filter="url(#fn-shadow)" />
+          <text x={COL_SINK} y={MID_Y + 4} textAnchor="middle"
+            fontSize="12" fontWeight="800" fill="white">T</text>
+
+          {/* Nurse nodes */}
+          {nurses.map((n) => {
+            const y   = getNurseY(n.id);
+            const lbl = n.name.length > 16 ? n.name.slice(0, 15) + '…' : n.name;
+            return (
+              <g key={n.id} filter="url(#fn-shadow)">
+                <rect x={COL_NURSE} y={y - NURSE_H / 2}
+                  width={NURSE_W} height={NURSE_H} rx={NODE_RX} fill="url(#fn-nurse)" />
+                <text x={COL_NURSE + NURSE_W / 2} y={y + 4}
+                  textAnchor="middle" fontSize="9.5" fontWeight="600" fill="white">
+                  {lbl}
+                </text>
+              </g>
+            );
+          })}
+
+          {/* Shift nodes */}
+          {shifts.map((s) => {
+            const y   = getShiftY(s.key);
+            const c   = FLOW_SHIFT_COLORS[s.type];
+            const lbl = `${format(parseISO(s.date), 'EEE d/M')} · ${s.type.charAt(0).toUpperCase() + s.type.slice(1)}`;
+            return (
+              <g key={s.key} filter="url(#fn-shadow)">
+                <rect x={COL_SHIFT} y={y - SHIFT_H / 2}
+                  width={SHIFT_W} height={SHIFT_H} rx={NODE_RX}
+                  fill={c.fill} stroke={c.stroke} strokeWidth="1.5" />
+                <text x={COL_SHIFT + SHIFT_W / 2} y={y + 4}
+                  textAnchor="middle" fontSize="9" fontWeight="600" fill={c.text}>
+                  {lbl}
+                </text>
+              </g>
+            );
+          })}
+        </svg>
+      </div>
+
+      {/* Footer stats */}
+      <p className="text-xs text-slate-400 mt-2 text-right">
+        {nurses.length} nurses · {shifts.length} shift slots · {edges.length} assignments
+      </p>
+    </div>
+  );
+}
 
 export default function ManageSchedule() {
   const { user } = useAuth();
@@ -302,6 +525,7 @@ export default function ManageSchedule() {
               </table>
             </div>
           </div>
+          <FlowNetworkDiagram assignments={schedule.assignments || []} />
         </div>
       ) : (
         <div className="card flex flex-col items-center justify-center py-16 text-center">
