@@ -251,11 +251,19 @@ export default function ManageSchedule() {
   const [message, setMessage] = useState({ text: '', type: '' });
   const [iterationsLog, setIterationsLog] = useState([]);
   const [showIterationsModal, setShowIterationsModal] = useState(false);
+  const [nursesMorning, setNursesMorning] = useState(2);
+  const [nursesAfternoon, setNursesAfternoon] = useState(2);
+  const [nursesNight, setNursesNight] = useState(1);
 
   useEffect(() => {
     api.get('/departments/').then((res) => {
       setDepartments(res.data);
-      if (res.data.length > 0) setSelectedDept(res.data[0].id);
+      if (res.data.length > 0) {
+        setSelectedDept(res.data[0].id);
+        setNursesMorning(res.data[0].min_nurses_morning);
+        setNursesAfternoon(res.data[0].min_nurses_afternoon);
+        setNursesNight(res.data[0].min_nurses_night);
+      }
     });
   }, []);
 
@@ -274,6 +282,12 @@ export default function ManageSchedule() {
 
   useEffect(() => {
     if (!selectedDept) return;
+    const dept = departments.find((d) => d.id === Number(selectedDept));
+    if (dept) {
+      setNursesMorning(dept.min_nurses_morning);
+      setNursesAfternoon(dept.min_nurses_afternoon);
+      setNursesNight(dept.min_nurses_night);
+    }
     checkShifts();
     api
       .get('/schedules/', { params: { department_id: selectedDept } })
@@ -281,7 +295,7 @@ export default function ManageSchedule() {
         const match = res.data.find((s) => s.week_start_date === weekStart);
         setSchedule(match || null);
       });
-  }, [selectedDept, weekStart]);
+  }, [selectedDept, weekStart, departments]);
 
   const handlePrepareShifts = async () => {
     setPreparingShifts(true);
@@ -290,6 +304,9 @@ export default function ManageSchedule() {
       await api.post('/shifts/generate-week', {
         department_id: Number(selectedDept),
         week_start_date: weekStart,
+        nurses_morning: Number(nursesMorning),
+        nurses_afternoon: Number(nursesAfternoon),
+        nurses_night: Number(nursesNight),
       });
       setShiftsReady(true);
       setMessage({ text: 'Shifts prepared! Nurses can now submit availability.', type: 'success' });
@@ -305,6 +322,15 @@ export default function ManageSchedule() {
     setMessage({ text: '', type: '' });
     setWarnings([]);
     try {
+      // Always sync required_staff before generating
+      await api.post('/shifts/generate-week', {
+        department_id: Number(selectedDept),
+        week_start_date: weekStart,
+        nurses_morning: Number(nursesMorning),
+        nurses_afternoon: Number(nursesAfternoon),
+        nurses_night: Number(nursesNight),
+      });
+      setShiftsReady(true);
       const res = await api.post('/schedules/generate', {
         department_id: Number(selectedDept),
         week_start_date: weekStart,
@@ -391,11 +417,44 @@ export default function ManageSchedule() {
               }}
             />
           </div>
+          <div>
+            <label className="form-label flex items-center gap-1">
+              <FiSun size={13} className="text-amber-500" /> Morning nurses
+            </label>
+            <input
+              type="number" min="1" max="20"
+              className="field"
+              value={nursesMorning}
+              onChange={(e) => setNursesMorning(e.target.value)}
+            />
+          </div>
+          <div>
+            <label className="form-label flex items-center gap-1">
+              <FiBriefcase size={13} className="text-orange-500" /> Afternoon nurses
+            </label>
+            <input
+              type="number" min="1" max="20"
+              className="field"
+              value={nursesAfternoon}
+              onChange={(e) => setNursesAfternoon(e.target.value)}
+            />
+          </div>
+          <div>
+            <label className="form-label flex items-center gap-1">
+              <FiMoon size={13} className="text-violet-500" /> Night nurses
+            </label>
+            <input
+              type="number" min="1" max="20"
+              className="field"
+              value={nursesNight}
+              onChange={(e) => setNursesNight(e.target.value)}
+            />
+          </div>
           <button
             onClick={handlePrepareShifts}
-            disabled={preparingShifts || shiftsReady}
+            disabled={preparingShifts}
             className="btn btn-secondary flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
-            title={shiftsReady ? 'Shifts already prepared' : 'Prepare shift slots for the week'}
+            title={shiftsReady ? 'Update nurse counts for this week' : 'Prepare shift slots for the week'}
           >
             {preparingShifts ? (
               <>
@@ -403,7 +462,7 @@ export default function ManageSchedule() {
                 Preparing…
               </>
             ) : shiftsReady ? (
-              <><FiCheckCircle size={16} /> Shifts Ready</>
+              <><FiCheckCircle size={16} /> Update Shifts</>
             ) : (
               <><FiCalendar size={16} /> Prepare Shifts</>
             )}

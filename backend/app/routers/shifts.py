@@ -30,9 +30,9 @@ def generate_week_shifts(
         raise HTTPException(status_code=404, detail="Department not found")
 
     default_staff = {
-        ShiftType.MORNING: dept.min_nurses_morning,
-        ShiftType.AFTERNOON: dept.min_nurses_afternoon,
-        ShiftType.NIGHT: dept.min_nurses_night,
+        ShiftType.MORNING:   payload.nurses_morning   if payload.nurses_morning   is not None else dept.min_nurses_morning,
+        ShiftType.AFTERNOON: payload.nurses_afternoon if payload.nurses_afternoon is not None else dept.min_nurses_afternoon,
+        ShiftType.NIGHT:     payload.nurses_night     if payload.nurses_night     is not None else dept.min_nurses_night,
     }
 
     created = []
@@ -49,6 +49,7 @@ def generate_week_shifts(
                 .first()
             )
             if existing:
+                existing.required_staff = default_staff[st]
                 created.append(existing)
             else:
                 shift = Shift(

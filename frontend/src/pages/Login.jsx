@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
-import { FiMail, FiLock, FiArrowRight, FiCalendar, FiAlertCircle } from 'react-icons/fi';
+import { FiMail, FiLock, FiArrowRight, FiCalendar, FiAlertCircle, FiEye, FiEyeOff } from 'react-icons/fi';
 
 const HERO_STATS = [
   { value: '3',   label: 'Shift Types' },
@@ -16,6 +16,7 @@ export default function Login() {
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+  const [showPassword, setShowPassword] = useState(false);
 
   useEffect(() => {
     if (user) navigate('/dashboard');
@@ -145,12 +146,21 @@ export default function Login() {
               <div className="relative">
                 <FiLock className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
                 <input
-                  type="password" required
-                  className="field pl-10"
+                  type={showPassword ? 'text' : 'password'} required
+                  className="field pl-10 pr-10"
                   placeholder="••••••••"
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
                 />
+                <button
+                  type="button"
+                  onClick={() => setShowPassword((v) => !v)}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 focus:outline-none"
+                  tabIndex={-1}
+                  aria-label={showPassword ? 'Hide password' : 'Show password'}
+                >
+                  {showPassword ? <FiEyeOff size={16} /> : <FiEye size={16} />}
+                </button>
               </div>
             </div>
 

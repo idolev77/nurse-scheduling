@@ -157,11 +157,10 @@ def claim_swap(
         SwapRequest.shift_assignment_id == assignment.id,
         SwapRequest.status == SwapRequestStatus.OPEN,
         SwapRequest.id != sr.id,
-    ).update({"status": SwapRequestStatus.CANCELLED, "resolved_at": datetime.utcnow()})
+    ).update({"status": SwapRequestStatus.CANCELLED})
 
     sr.claimant_id = current_user.id
     sr.status = SwapRequestStatus.CLAIMED
-    sr.resolved_at = datetime.utcnow()
 
     # Notify the original requester that their shift was taken
     claimant_name = f"{current_user.first_name} {current_user.last_name}"
@@ -217,7 +216,6 @@ def cancel_swap_request(
         raise HTTPException(status_code=409, detail="Only open offers can be cancelled")
 
     sr.status = SwapRequestStatus.CANCELLED
-    sr.resolved_at = datetime.utcnow()
     db.commit()
 
 

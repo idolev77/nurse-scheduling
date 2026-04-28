@@ -73,7 +73,6 @@ class ShiftConstraintCreate(BaseModel):
     date: date
     shift_type: ShiftType
     constraint_type: ConstraintType
-    note: Optional[str] = None
 
 
 class ShiftConstraintOut(BaseModel):
@@ -83,7 +82,6 @@ class ShiftConstraintOut(BaseModel):
     date: date
     shift_type: ShiftType
     constraint_type: ConstraintType
-    note: Optional[str] = None
 
     @classmethod
     def from_orm(cls, obj):
@@ -110,7 +108,6 @@ class LeaveRequestOut(BaseModel):
     end_date: date
     reason: Optional[str] = None
     status: RequestStatus
-    reviewed_by: Optional[int] = None
 
     class Config:
         from_attributes = True
@@ -189,37 +186,9 @@ class ShiftUpdate(BaseModel):
 class GenerateShiftsRequest(BaseModel):
     department_id: int
     week_start_date: date
-
-
-# ── Nurse Shift Availability ────────────────────
-class AvailabilityCreate(BaseModel):
-    shift_id: int
-    capacity: int = Field(default=1, ge=1)
-    preference_level: int = Field(default=1, ge=1, le=2)
-
-
-class AvailabilityBulkItem(BaseModel):
-    shift_id: int
-    capacity: int = Field(default=1, ge=1)
-    preference_level: int = Field(default=1, ge=1, le=2)
-
-
-class AvailabilityBulkCreate(BaseModel):
-    items: List[AvailabilityBulkItem]
-
-
-class AvailabilityOut(BaseModel):
-    id: int
-    nurse_id: int
-    shift_id: int
-    capacity: int
-    preference_level: int
-    nurse_name: Optional[str] = None
-    shift_date: Optional[date] = None
-    shift_type: Optional[ShiftType] = None
-
-    class Config:
-        from_attributes = True
+    nurses_morning: Optional[int] = Field(default=None, ge=1)
+    nurses_afternoon: Optional[int] = Field(default=None, ge=1)
+    nurses_night: Optional[int] = Field(default=None, ge=1)
 
 
 # ── Swap Requests (Shift Swap Marketplace) ────────────
