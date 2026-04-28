@@ -69,6 +69,9 @@ def generate(
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    # Re-fetch the schedule so that the assignments relationship is loaded
+    # fresh from the DB (avoids SQLAlchemy lazy-load issues after same-session commit).
+    schedule = db.query(Schedule).filter(Schedule.id == schedule.id).first()
     return ScheduleGenerateResult(
         schedule=_format_schedule(schedule, db),
         total_required=total_required,
