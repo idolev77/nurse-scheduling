@@ -226,3 +226,27 @@ class NotificationOut(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+# ── Nurse Shift Stats (fairness state table) ──────────
+class NurseShiftStatsOut(BaseModel):
+    id: int
+    nurse_id: int
+    nurse_name: Optional[str] = None
+    period_year: int
+    period_month: int
+    night_shifts_count: int
+    weekend_shifts_count: int
+    total_shifts_count: int
+    forced_assignments_count: int
+    fatigue_index: float
+    updated_at: Optional[datetime] = None
+
+    class Config:
+        from_attributes = True
+
+
+class NurseShiftStatsReset(BaseModel):
+    """Body for manually resetting a nurse's stats for a period."""
+    period_year: int
+    period_month: int

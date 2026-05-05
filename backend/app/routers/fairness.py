@@ -1,13 +1,18 @@
 import math
-from typing import Optional
+from typing import Optional, List
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, HTTPException
 from sqlalchemy import extract
 from sqlalchemy.orm import Session
 
-from app.auth import require_role
+from app.auth import get_current_user, require_role
 from app.database import get_db
-from app.models import ConstraintType, RoleEnum, Schedule, ShiftAssignment, ShiftConstraint, ShiftType, User
+from app.models import (
+    ConstraintType, NurseShiftStats, RoleEnum, Schedule,
+    ShiftAssignment, ShiftConstraint, ShiftType, User,
+)
+from app.schemas import NurseShiftStatsOut
+from app.scheduler import update_nurse_stats
 
 router = APIRouter(prefix="/api/fairness", tags=["Fairness Analytics"])
 
@@ -135,3 +140,100 @@ def shift_distribution(
         "total_violations": sum(total_violations_list),
         "total_assignments_checked": total_checked,
     }
+
+
+# ═══════════════════════════════════════════════════════════
+#  Nurse Shift Stats endpoints
+# ═══════════════════════════════════════════════════════════
+
+@router.get("/nurse-stats", response_model=List[NurseShiftStatsOut])
+def list_nurse_stats(
+    department_id: Optional[int] = Query(None, description="Filter by department"),
+    year: Optional[int] = Query(None),
+    month: Optional[int] = Query(None, description="1-12"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_role(RoleEnum.HEAD_NURSE, RoleEnum.ADMIN)),
+):
+    """
+    Return all NurseShiftStats rows, optionally filtered by department /
+    period.  Rows are sorted by fatigue_index descending so the most
+    burdened nurses appear first.
+    """
+    query = db.query(NurseShiftStats).join(User, NurseShiftStats.nurse_id == User.id)
+
+    if department_id:
+        query = query.filter(User.department_id == department_id)
+    if year:
+        query = query.filter(NurseShiftStats.period_year == year)
+    if month:
+        query = query.filter(NurseShiftStats.period_month == month)
+
+    rows = query.order_by(NurseShiftStats.fatigue_index.desc()).all()
+
+    result = []
+    for row in rows:
+        nurse = db.query(User).filter(User.id == row.nurse_id).first()
+        item = NurseShiftStatsOut.model_validate(row)
+        item.nurse_name = f"{nurse.first_name} {nurse.last_name}" if nurse else None
+        result.append(item)
+    return result
+
+
+@router.get("/nurse-stats/{nurse_id}", response_model=List[NurseShiftStatsOut])
+def get_nurse_stats(
+    nurse_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Return all monthly stats rows for a specific nurse.
+    Nurses can only view their own stats; head nurses / admins can view any.
+    """
+    if (
+        current_user.role == RoleEnum.NURSE
+        and current_user.id != nurse_id
+    ):
+        raise HTTPException(status_code=403, detail="Access denied.")
+
+    rows = (
+        db.query(NurseShiftStats)
+        .filter(NurseShiftStats.nurse_id == nurse_id)
+        .order_by(NurseShiftStats.period_year.desc(), NurseShiftStats.period_month.desc())
+        .all()
+    )
+    nurse = db.query(User).filter(User.id == nurse_id).first()
+    nurse_name = f"{nurse.first_name} {nurse.last_name}" if nurse else None
+
+    result = []
+    for row in rows:
+        item = NurseShiftStatsOut.model_validate(row)
+        item.nurse_name = nurse_name
+        result.append(item)
+    return result
+
+
+@router.delete(
+    "/nurse-stats/{nurse_id}",
+    status_code=204,
+    dependencies=[Depends(require_role(RoleEnum.ADMIN))],
+)
+def reset_nurse_stats(
+    nurse_id: int,
+    year: int = Query(...),
+    month: int = Query(..., ge=1, le=12),
+    db: Session = Depends(get_db),
+):
+    """
+    Reset (delete) a nurse's stats for the given period.
+    Admin-only.  A fresh row will be created automatically on the next
+    schedule generation.
+    """
+    deleted = (
+        db.query(NurseShiftStats)
+        .filter_by(nurse_id=nurse_id, period_year=year, period_month=month)
+        .delete(synchronize_session=False)
+    )
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Stats row not found.")
+    db.commit()
+

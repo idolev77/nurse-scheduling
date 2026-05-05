@@ -1,17 +1,27 @@
 """
 Smart Scheduling Algorithm for Nurse Shift Assignment.
 
-Uses a Min-Cost Max-Flow (MCMF) network model wrapped in an
-iterative optimisation loop:
+Architecture
+------------
+Phase 1 — Min-Cost Max-Flow (MCMF):
+    A flow network encodes nurse availability, shift requirements, and
+    preference levels.  Iterated *iterations* times with light input
+    randomisation; the highest-scoring candidate is kept.
 
-1. Collect nurses, shifts, availability, and hard blocks from the DB.
-2. Run ``iterations`` rounds.  In each round the input is lightly
-   randomised (shuffled order + probabilistic edge-dropping) so that
-   NetworkX breaks ties differently.
-3. Every candidate solution is scored by ``evaluate_schedule`` which
-   rewards filled quotas & preferred assignments and penalises high
-   utilisation-variance among nurses.
-4. The highest-scoring solution is persisted to the database.
+Phase 2 — Fairness-Aware Force-Assignment:
+    After MCMF, any shift slot that is still **under-staffed** enters
+    a Force-Assignment pass.  The algorithm queries ``nurse_shift_stats``
+    and selects the available nurse with the **lowest fatigue_index**.
+    This guarantees:
+
+    Hard Constraint  → No shift is ever left empty (100 % coverage).
+    Soft Constraint  → Difficult shifts (night / weekend) are distributed
+                       to whoever has carried the least burden so far.
+
+Phase 3 — Stats Update:
+    ``update_nurse_stats`` is called for every assignment persisted to
+    the DB.  Force assignments carry an extra fatigue penalty so future
+    scheduling cycles automatically compensate affected nurses.
 """
 
 from __future__ import annotations
@@ -19,7 +29,7 @@ from __future__ import annotations
 import math
 import random
 from dataclasses import dataclass, field
-from datetime import date, timedelta
+from datetime import date, timedelta, datetime
 from typing import Dict, List, Set, Tuple
 
 import networkx as nx
@@ -27,13 +37,20 @@ from sqlalchemy.orm import Session
 
 from app.models import (
     User, Department, ShiftConstraint, LeaveRequest, ShiftAssignment,
-    Schedule, Shift,
+    Schedule, Shift, NurseShiftStats,
     ShiftType, ConstraintType, RequestStatus, RoleEnum,
 )
 
-# ────────────────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════
+#  Fatigue-index weights (tunable constants)
+# ═══════════════════════════════════════════════════════════
+_FATIGUE_NIGHT_WEIGHT    = 2.0   # each night shift adds 2 fatigue points
+_FATIGUE_WEEKEND_WEIGHT  = 1.5   # each weekend shift adds 1.5 points
+_FATIGUE_FORCE_PENALTY   = 3.0   # extra penalty per forced assignment
+
+# ════════════════════════════════════════════════════════════
 #  Small data-classes used inside the algorithm (not ORM)
-# ────────────────────────────────────────────────────────────
+# ════════════════════════════════════════════════════════════
 
 @dataclass
 class _AvailEdge:
@@ -41,7 +58,7 @@ class _AvailEdge:
     nurse_id: int
     shift_id: int
     capacity: int
-    preference_level: int          # 1 = preferred, 2 = available
+    preference_level: int          # 1 = preferred, 2 = available, 3 = prefer_not
 
 
 @dataclass
@@ -70,18 +87,302 @@ class _CandidateResult:
     score: float            = -math.inf
 
 
-# ────────────────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════
 #  Helper: nurse weekly capacity
-# ────────────────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════
 
 def _nurse_capacity(employment_percentage: int) -> int:
     """Max shifts per week based on employment percentage."""
     return max(1, round((employment_percentage / 100) * 6))
 
 
-# ────────────────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════
+#  Fairness Engine — NurseShiftStats helpers
+# ═══════════════════════════════════════════════════════════
+
+def _is_weekend(d: date) -> bool:
+    """Return True if *d* falls on Friday (4), Saturday (5), or Sunday (6)."""
+    return d.weekday() >= 4
+
+
+def _get_or_create_stats(db: Session, nurse_id: int, d: date) -> NurseShiftStats:
+    """
+    Retrieve the NurseShiftStats row for *nurse_id* in the month that
+    contains *d*.  Creates a zeroed row if one does not yet exist.
+    """
+    row = (
+        db.query(NurseShiftStats)
+        .filter_by(nurse_id=nurse_id, period_year=d.year, period_month=d.month)
+        .first()
+    )
+    if row is None:
+        row = NurseShiftStats(
+            nurse_id=nurse_id,
+            period_year=d.year,
+            period_month=d.month,
+            night_shifts_count=0,
+            weekend_shifts_count=0,
+            total_shifts_count=0,
+            forced_assignments_count=0,
+            fatigue_index=0.0,
+        )
+        db.add(row)
+        db.flush()
+    return row
+
+
+def _recompute_fatigue(row: NurseShiftStats) -> float:
+    """
+    Deterministic formula for the fatigue index.
+
+        fatigue = night_shifts_count   * _FATIGUE_NIGHT_WEIGHT
+                + weekend_shifts_count * _FATIGUE_WEEKEND_WEIGHT
+                + forced_assignments   * _FATIGUE_FORCE_PENALTY
+    """
+    return (
+        row.night_shifts_count    * _FATIGUE_NIGHT_WEIGHT
+        + row.weekend_shifts_count * _FATIGUE_WEEKEND_WEIGHT
+        + row.forced_assignments_count * _FATIGUE_FORCE_PENALTY
+    )
+
+
+def update_nurse_stats(
+    db: Session,
+    nurse_id: int,
+    shift_date: date,
+    shift_type: ShiftType,
+    forced: bool = False,
+) -> NurseShiftStats:
+    """
+    Atomically update (or create) the NurseShiftStats row for
+    *nurse_id* after a new assignment is made.
+
+    Parameters
+    ----------
+    nurse_id    : ID of the assigned nurse.
+    shift_date  : Calendar date of the shift.
+    shift_type  : MORNING / AFTERNOON / NIGHT.
+    forced      : True when the assignment bypassed normal preference
+                  rules (Force-Assignment fallback).
+
+    Returns the updated row (not yet committed – caller decides when
+    to commit).
+    """
+    row = _get_or_create_stats(db, nurse_id, shift_date)
+
+    row.total_shifts_count += 1
+
+    if shift_type == ShiftType.NIGHT:
+        row.night_shifts_count += 1
+    if _is_weekend(shift_date):
+        row.weekend_shifts_count += 1
+    if forced:
+        row.forced_assignments_count += 1
+
+    row.fatigue_index = _recompute_fatigue(row)
+    row.updated_at = datetime.utcnow()
+    return row
+
+
+def _select_nurse_by_fairness(
+    db: Session,
+    candidates: List[int],
+    shift_date: date,
+    local_extra_fatigue: Dict[int, float] = None,
+) -> int:
+    """
+    Given a list of *candidate* nurse IDs, return the one with the
+    **lowest effective fatigue** for the month containing *shift_date*.
+
+    effective_fatigue = DB fatigue_index + local_extra_fatigue[nurse_id]
+
+    *local_extra_fatigue* accumulates forced assignments made earlier
+    in the same scheduling run (before the DB is committed), ensuring
+    the force-fill loop distributes burden across multiple nurses
+    instead of repeatedly picking the same lowest-fatigue nurse.
+
+    Nurses with no stats row yet are treated as DB fatigue = 0.0.
+    Tie-breaking is random so no nurse is systematically favoured.
+    """
+    if len(candidates) == 1:
+        return candidates[0]
+
+    extra = local_extra_fatigue or {}
+
+    # Fetch existing stats for all candidates in one query
+    stats_rows = (
+        db.query(NurseShiftStats)
+        .filter(
+            NurseShiftStats.nurse_id.in_(candidates),
+            NurseShiftStats.period_year == shift_date.year,
+            NurseShiftStats.period_month == shift_date.month,
+        )
+        .all()
+    )
+    fatigue_map: Dict[int, float] = {r.nurse_id: r.fatigue_index for r in stats_rows}
+
+    # effective = DB value + local session penalty
+    scored = [
+        (fatigue_map.get(nid, 0.0) + extra.get(nid, 0.0), nid)
+        for nid in candidates
+    ]
+
+    # Sort ascending; random tiebreak prevents systematic bias
+    scored.sort(key=lambda x: (x[0], random.random()))
+    return scored[0][1]
+
+
+# ═══════════════════════════════════════════════════════════
+#  Force-Assignment: guarantee 100 % shift coverage
+# ═══════════════════════════════════════════════════════════
+
+def _force_fill_shifts(
+    db: Session,
+    assignments: List[dict],
+    shifts: List[_ShiftInfo],
+    nurses: List[_NurseInfo],
+    hard_blocks: Set[Tuple[int, date, ShiftType]],
+) -> Tuple[List[dict], List[str]]:
+    """
+    Scan *assignments* for any shift that is under-staffed relative to
+    its ``required_staff`` quota and fill the gap using the fairness
+    engine.
+
+    Eligibility tiers (tried in order, stopping at the first non-empty list):
+      Tier 1 — preferred: not CANNOT_WORK, not assigned today, under weekly cap
+      Tier 2 — relax capacity: not CANNOT_WORK, not assigned today
+      Tier 3 — relax same-day: not CANNOT_WORK (allow multi-shift same day)
+      Tier 4 — override CANNOT_WORK: pick the least-burdened nurse regardless
+                (the ONLY constraint that is NEVER relaxed: same nurse in
+                 the exact same slot twice)
+
+    Returns
+    -------
+    filled_assignments : the original list + any forced additions.
+    force_warnings     : one warning string per force-assignment made.
+    """
+    force_warnings: List[str] = []
+    nurse_ids = [n.id for n in nurses]
+
+    # Count how many nurses are already assigned to each (date, shift_type)
+    slot_count: Dict[Tuple[date, ShiftType], int] = {}
+    for a in assignments:
+        key = (a["date"], a["shift_type"])
+        slot_count[key] = slot_count.get(key, 0) + 1
+
+    # Track per-nurse weekly shift count to respect capacity
+    nurse_week_count: Dict[int, int] = {n.id: 0 for n in nurses}
+    for a in assignments:
+        nurse_week_count[a["nurse_id"]] = nurse_week_count.get(a["nurse_id"], 0) + 1
+    nurse_cap_map = {n.id: _nurse_capacity(n.employment_percentage) for n in nurses}
+
+    # Track per-nurse per-date assignment (at-most-one-shift-per-day soft rule)
+    nurse_date_assigned: Dict[Tuple[int, date], bool] = {}
+    for a in assignments:
+        nurse_date_assigned[(a["nurse_id"], a["date"])] = True
+
+    # ABSOLUTE: never assign the same nurse to the exact same (date, shift_type) twice
+    nurse_slot_assigned: Set[Tuple[int, date, ShiftType]] = set()
+    for a in assignments:
+        nurse_slot_assigned.add((a["nurse_id"], a["date"], a["shift_type"]))
+
+    # Local fatigue accumulator: tracks forced-assignment penalty added
+    # during THIS run so that the next force-pick sees updated scores
+    # even before the DB is committed.  Weight matches _FATIGUE_FORCE_PENALTY.
+    local_extra_fatigue: Dict[int, float] = {nid: 0.0 for nid in nurse_ids}
+
+    filled_assignments = list(assignments)
+
+    for shift in shifts:
+        key = (shift.date, shift.shift_type)
+        current_count = slot_count.get(key, 0)
+        deficit = shift.required_staff - current_count
+        if deficit <= 0:
+            continue
+
+        for _ in range(deficit):
+            # ── Tier 1: ideal — not CANNOT_WORK, not today, under capacity ──
+            eligible = [
+                nid for nid in nurse_ids
+                if (nid, shift.date, shift.shift_type) not in nurse_slot_assigned
+                and (nid, shift.date, shift.shift_type) not in hard_blocks
+                and not nurse_date_assigned.get((nid, shift.date), False)
+                and nurse_week_count.get(nid, 0) < nurse_cap_map.get(nid, 6)
+            ]
+
+            # ── Tier 2: relax weekly capacity ───────────────────────────────
+            if not eligible:
+                eligible = [
+                    nid for nid in nurse_ids
+                    if (nid, shift.date, shift.shift_type) not in nurse_slot_assigned
+                    and (nid, shift.date, shift.shift_type) not in hard_blocks
+                    and not nurse_date_assigned.get((nid, shift.date), False)
+                ]
+
+            # ── Tier 3: relax same-day (allow multi-shift, not same slot) ───
+            if not eligible:
+                eligible = [
+                    nid for nid in nurse_ids
+                    if (nid, shift.date, shift.shift_type) not in nurse_slot_assigned
+                    and (nid, shift.date, shift.shift_type) not in hard_blocks
+                ]
+
+            # ── Tier 4: override CANNOT_WORK (true last resort) ─────────────
+            # Same-slot duplication is the only constraint that is NEVER lifted.
+            if not eligible:
+                eligible = [
+                    nid for nid in nurse_ids
+                    if (nid, shift.date, shift.shift_type) not in nurse_slot_assigned
+                ]
+                if eligible:
+                    force_warnings.append(
+                        f"WARNING: {shift.date.isoformat()} {shift.shift_type.value} "
+                        "— overriding CANNOT_WORK (all nurses blocked, fairness fallback)"
+                    )
+
+            if not eligible:
+                # Truly impossible: required_staff > total nurses
+                force_warnings.append(
+                    f"CRITICAL: {shift.date.isoformat()} {shift.shift_type.value} "
+                    f"could not be filled — required_staff exceeds nurse count."
+                )
+                break
+
+            # Pass local accumulated fatigue so each pick sees the updated
+            # burden from previous forced assignments in this same run.
+            chosen_id = _select_nurse_by_fairness(
+                db, eligible, shift.date, local_extra_fatigue,
+            )
+
+            filled_assignments.append({
+                "nurse_id": chosen_id,
+                "date": shift.date,
+                "shift_type": shift.shift_type,
+                "forced": True,
+            })
+            force_warnings.append(
+                f"FORCE-ASSIGNED {shift.date.isoformat()} "
+                f"{shift.shift_type.value} → nurse #{chosen_id} "
+                "(fairness fallback)"
+            )
+
+            # Update local tracking
+            slot_count[key] = slot_count.get(key, 0) + 1
+            nurse_week_count[chosen_id] = nurse_week_count.get(chosen_id, 0) + 1
+            nurse_date_assigned[(chosen_id, shift.date)] = True
+            nurse_slot_assigned.add((chosen_id, shift.date, shift.shift_type))
+            # Accumulate local fatigue so next forced pick avoids this nurse
+            local_extra_fatigue[chosen_id] = (
+                local_extra_fatigue.get(chosen_id, 0.0) + _FATIGUE_FORCE_PENALTY
+            )
+
+    return filled_assignments, force_warnings
+
+
+
+# ═══════════════════════════════════════════════════════════
 #  1. Scoring function
-# ────────────────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════
 
 # Tunable weights
 _W_FILLED_SLOT   =  100     # bonus per filled slot
@@ -167,9 +468,9 @@ def evaluate_schedule(
     return score
 
 
-# ────────────────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════
 #  2. Input randomiser
-# ────────────────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════
 
 _DROP_PROB_PREF2 = 0.10   # probability to drop a preference-2 edge
 
@@ -200,9 +501,9 @@ def _randomise_inputs(
     return r_nurses, r_shifts, r_avail
 
 
-# ────────────────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════
 #  3. Hard-constraint detection & iterative repair
-# ────────────────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════
 
 _MAX_REPAIR_ROUNDS = 10
 
@@ -344,9 +645,9 @@ def _solve_with_constraints(
     return candidate
 
 
-# ────────────────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════
 #  4. Single-iteration flow solve (pure, no DB)
-# ────────────────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════
 
 def _solve_once(
     nurses: List[_NurseInfo],
@@ -433,9 +734,9 @@ def _solve_once(
     )
 
 
-# ────────────────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════
 #  5. Public entry-point (called by the router)
-# ────────────────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════
 
 _DEFAULT_ITERATIONS = 50
 
@@ -604,6 +905,15 @@ def generate_schedule(
     if iteration_logs:
         iteration_logs[best_idx]["is_best"] = True
 
+    # ── Phase 2: Force-Assignment (guarantee 100 % coverage) ──
+    filled_assignments, force_warnings = _force_fill_shifts(
+        db, best.assignments, shifts, nurses, hard_blocks,
+    )
+    all_warnings = best.warnings + force_warnings
+
+    # Recalculate totals after force-fill
+    total_assigned_final = len(filled_assignments)
+
     # ── Persist winning schedule to DB ─────────────────
     existing = (
         db.query(Schedule)
@@ -626,9 +936,19 @@ def generate_schedule(
     db.add(schedule)
     db.flush()
 
-    for a in best.assignments:
+    for a in filled_assignments:
+        forced_flag = a.pop("forced", False)
         db.add(ShiftAssignment(schedule_id=schedule.id, **a))
+        # ── Phase 3: Update fairness stats immediately ─
+        update_nurse_stats(
+            db,
+            nurse_id=a["nurse_id"],
+            shift_date=a["date"],
+            shift_type=a["shift_type"],
+            forced=forced_flag,
+        )
 
     db.commit()
     db.refresh(schedule)
-    return schedule, best.warnings, best.total_required, best.total_assigned, iteration_logs
+    return schedule, all_warnings, best.total_required, total_assigned_final, iteration_logs
+

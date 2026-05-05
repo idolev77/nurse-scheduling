@@ -2,7 +2,7 @@ import enum
 from datetime import datetime, date
 from sqlalchemy import (
     Column, Integer, String, Date, DateTime, Enum, ForeignKey, Boolean, Text,
-    UniqueConstraint,
+    UniqueConstraint, Float,
 )
 from sqlalchemy.orm import relationship
 from app.database import Base
@@ -59,6 +59,7 @@ class User(Base):
     swap_requests_offered = relationship("SwapRequest", back_populates="requester", foreign_keys="SwapRequest.requester_id")
     swap_requests_claimed = relationship("SwapRequest", back_populates="claimant", foreign_keys="SwapRequest.claimant_id")
     notifications = relationship("Notification", back_populates="user", foreign_keys="Notification.user_id")
+    shift_stats = relationship("NurseShiftStats", back_populates="nurse")
 
 
 # ── Departments ────────────────────────────────────────
@@ -177,4 +178,42 @@ class Shift(Base):
     department = relationship("Department", back_populates="shifts")
 
 
+# ── Nurse Shift Stats (fairness state table) ───────────
+class NurseShiftStats(Base):
+    """
+    Tracks cumulative fairness metrics per nurse per calendar month.
+
+    fatigue_index formula (updated after every assignment):
+        base = night_shifts_count * 2.0 + weekend_shifts_count * 1.5
+        force_penalty = forced_assignments_count * 3.0
+        fatigue_index = base + force_penalty
+
+    A lower fatigue_index means the nurse should be preferred
+    when assigning the next difficult shift.
+    """
+    __tablename__ = "nurse_shift_stats"
+    __table_args__ = (
+        UniqueConstraint("nurse_id", "period_year", "period_month",
+                         name="uq_stats_nurse_period"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    nurse_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+
+    # ── Period (one row per nurse per calendar month) ─
+    period_year  = Column(Integer, nullable=False)
+    period_month = Column(Integer, nullable=False)   # 1-12
+
+    # ── Raw counters ──────────────────────────────────
+    night_shifts_count    = Column(Integer, default=0, nullable=False)
+    weekend_shifts_count  = Column(Integer, default=0, nullable=False)
+    total_shifts_count    = Column(Integer, default=0, nullable=False)
+    forced_assignments_count = Column(Integer, default=0, nullable=False)
+
+    # ── Derived metric (denormalised for fast sorting) ─
+    fatigue_index = Column(Float, default=0.0, nullable=False)
+
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    nurse = relationship("User", back_populates="shift_stats")
 

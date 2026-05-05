@@ -20,6 +20,9 @@ import {
   FiMinusCircle,
   FiInfo,
   FiMoon,
+  FiZap,
+  FiSun,
+  FiAlertTriangle,
 } from 'react-icons/fi';
 import api from '../api';
 
@@ -208,10 +211,170 @@ function DiffBadge({ diff }) {
   );
 }
 
+// ── Fatigue-index helpers ─────────────────────────────────────────────────────
+
+function fatigueLevel(index) {
+  if (index === 0)  return { label: 'None',     color: 'text-emerald-600', bg: 'bg-emerald-50',  border: 'border-emerald-200', dot: 'bg-emerald-400' };
+  if (index < 5)   return { label: 'Low',      color: 'text-blue-600',    bg: 'bg-blue-50',     border: 'border-blue-200',    dot: 'bg-blue-400' };
+  if (index < 10)  return { label: 'Moderate', color: 'text-amber-600',   bg: 'bg-amber-50',    border: 'border-amber-200',   dot: 'bg-amber-400' };
+  return                  { label: 'High',     color: 'text-red-600',     bg: 'bg-red-50',      border: 'border-red-200',     dot: 'bg-red-500' };
+}
+
+// ── NurseStatsTable sub-component ─────────────────────────────────────────────
+
+function NurseStatsTable({ statsData, filters, departments }) {
+  const [localFilters, setLocalFilters] = useState({
+    department_id: filters.department_id,
+    year: filters.year,
+    month: filters.month,
+  });
+  const [rows, setRows]       = useState(statsData);
+  const [loading, setLoading] = useState(false);
+
+  // Sync when parent filters change
+  useEffect(() => {
+    setLocalFilters({ department_id: filters.department_id, year: filters.year, month: filters.month });
+  }, [filters]);
+
+  // Re-fetch when localFilters change
+  useEffect(() => {
+    setLoading(true);
+    const params = {};
+    if (localFilters.department_id) params.department_id = localFilters.department_id;
+    if (localFilters.year)          params.year          = localFilters.year;
+    if (localFilters.month)         params.month         = localFilters.month;
+    api.get('/fairness/nurse-stats', { params })
+      .then((res) => setRows(res.data))
+      .catch(() => setRows([]))
+      .finally(() => setLoading(false));
+  }, [localFilters]);
+
+  const maxFatigue = rows.length ? Math.max(...rows.map((r) => r.fatigue_index), 1) : 1;
+
+  return (
+    <div className="bg-white rounded-2xl border border-slate-100 shadow-sm overflow-hidden">
+      {/* Header */}
+      <div className="px-5 py-4 border-b border-slate-50 flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <p className="text-sm font-bold text-slate-800 flex items-center gap-2">
+            <FiZap size={14} className="text-amber-500" />
+            Nurse Fatigue &amp; Load Index
+          </p>
+          <p className="text-xs text-slate-400 mt-0.5">
+            Cumulative workload per nurse — ranked highest fatigue first.
+            Fatigue = nights×2 + weekends×1.5 + forced×3
+          </p>
+        </div>
+
+        {/* Mini filter for this section only */}
+        <div className="flex gap-2 flex-wrap">
+          <select
+            value={localFilters.department_id}
+            onChange={(e) => setLocalFilters((f) => ({ ...f, department_id: e.target.value }))}
+            className="text-xs border border-slate-200 rounded-lg px-2 py-1.5 bg-slate-50 text-slate-600 focus:outline-none focus:ring-2 focus:ring-amber-300"
+          >
+            <option value="">All Departments</option>
+            {departments.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
+          </select>
+          <select
+            value={localFilters.year}
+            onChange={(e) => setLocalFilters((f) => ({ ...f, year: e.target.value }))}
+            className="text-xs border border-slate-200 rounded-lg px-2 py-1.5 bg-slate-50 text-slate-600 focus:outline-none focus:ring-2 focus:ring-amber-300"
+          >
+            <option value="">All Years</option>
+            {YEAR_OPTIONS.map((y) => <option key={y} value={y}>{y}</option>)}
+          </select>
+          <select
+            value={localFilters.month}
+            onChange={(e) => setLocalFilters((f) => ({ ...f, month: e.target.value }))}
+            className="text-xs border border-slate-200 rounded-lg px-2 py-1.5 bg-slate-50 text-slate-600 focus:outline-none focus:ring-2 focus:ring-amber-300"
+          >
+            {MONTH_NAMES.map((name, i) => (
+              <option key={i} value={i === 0 ? '' : i}>{name}</option>
+            ))}
+          </select>
+        </div>
+      </div>
+
+      {/* Table body */}
+      {loading ? (
+        <div className="p-8 text-center text-slate-400 text-sm animate-pulse">Loading fatigue data…</div>
+      ) : rows.length === 0 ? (
+        <div className="p-10 text-center text-slate-400 text-sm">
+          No stats yet — generate a schedule first to populate the fatigue index.
+        </div>
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="bg-slate-50 text-[11px] uppercase tracking-wider text-slate-400 font-semibold">
+                <th className="px-5 py-3 text-left">Nurse</th>
+                <th className="px-5 py-3 text-right">Period</th>
+                <th className="px-5 py-3 text-right">
+                  <span className="flex items-center justify-end gap-1"><FiMoon size={11} /> Nights</span>
+                </th>
+                <th className="px-5 py-3 text-right">
+                  <span className="flex items-center justify-end gap-1"><FiSun size={11} /> Weekends</span>
+                </th>
+                <th className="px-5 py-3 text-right">Total Shifts</th>
+                <th className="px-5 py-3 text-right">
+                  <span className="flex items-center justify-end gap-1"><FiAlertTriangle size={11} /> Forced</span>
+                </th>
+                <th className="px-5 py-3 text-right">Fatigue Index</th>
+                <th className="px-5 py-3 text-left w-40">Load Bar</th>
+                <th className="px-5 py-3 text-center">Level</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-50">
+              {rows.map((row) => {
+                const meta   = fatigueLevel(row.fatigue_index);
+                const pct    = Math.round((row.fatigue_index / maxFatigue) * 100);
+                const period = `${row.period_year}/${String(row.period_month).padStart(2, '0')}`;
+                return (
+                  <tr key={row.id} className="hover:bg-slate-50/70 transition-colors">
+                    <td className="px-5 py-3 font-semibold text-slate-700">{row.nurse_name ?? `#${row.nurse_id}`}</td>
+                    <td className="px-5 py-3 text-right text-slate-400 font-mono text-xs">{period}</td>
+                    <td className="px-5 py-3 text-right font-bold text-indigo-600">{row.night_shifts_count}</td>
+                    <td className="px-5 py-3 text-right font-bold text-cyan-600">{row.weekend_shifts_count}</td>
+                    <td className="px-5 py-3 text-right text-slate-500">{row.total_shifts_count}</td>
+                    <td className="px-5 py-3 text-right">
+                      <span className={row.forced_assignments_count > 0 ? 'font-bold text-red-500' : 'text-slate-400'}>
+                        {row.forced_assignments_count}
+                      </span>
+                    </td>
+                    <td className="px-5 py-3 text-right font-extrabold text-slate-800">
+                      {row.fatigue_index.toFixed(1)}
+                    </td>
+                    <td className="px-5 py-3 w-40">
+                      <div className="w-full bg-slate-100 rounded-full h-2">
+                        <div
+                          className={`h-2 rounded-full transition-all ${meta.dot}`}
+                          style={{ width: `${pct}%` }}
+                        />
+                      </div>
+                    </td>
+                    <td className="px-5 py-3 text-center">
+                      <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-bold border ${meta.bg} ${meta.border} ${meta.color}`}>
+                        <span className={`w-1.5 h-1.5 rounded-full ${meta.dot}`} />
+                        {meta.label}
+                      </span>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Main Component ────────────────────────────────────────────────────────────
 
 export default function FairnessDashboard() {
   const [data, setData] = useState(null);
+  const [nurseStats, setNurseStats] = useState([]);
   const [departments, setDepartments] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -229,9 +392,15 @@ export default function FairnessDashboard() {
     if (filters.department_id) params.department_id = filters.department_id;
     if (filters.year) params.year = filters.year;
     if (filters.month) params.month = filters.month;
-    api
-      .get('/fairness/shift-distribution', { params })
-      .then((res) => setData(res.data))
+
+    Promise.all([
+      api.get('/fairness/shift-distribution', { params }),
+      api.get('/fairness/nurse-stats', { params }),
+    ])
+      .then(([distRes, statsRes]) => {
+        setData(distRes.data);
+        setNurseStats(statsRes.data);
+      })
       .catch(() => setError('Failed to load fairness data. Please try again.'))
       .finally(() => setLoading(false));
   }, [filters]);
@@ -557,6 +726,13 @@ export default function FairnessDashboard() {
               No weekend or night shift assignments found for the selected filters.
             </div>
           )}
+
+          {/* Nurse Fatigue & Load Index table */}
+          <NurseStatsTable
+            statsData={nurseStats}
+            filters={filters}
+            departments={departments}
+          />
         </>
       )}
     </div>
