@@ -1,6 +1,6 @@
 import { useAuth } from '../context/AuthContext';
 import { Link } from 'react-router-dom';
-import { FiCalendar, FiSliders, FiClock, FiUsers, FiSettings, FiArrowRight, FiActivity, FiRepeat, FiList } from 'react-icons/fi';
+import { FiCalendar, FiSliders, FiClock, FiUsers, FiSettings, FiArrowRight, FiActivity, FiRepeat, FiList, FiPieChart } from 'react-icons/fi';
 
 const CARDS = [
   {
@@ -65,6 +65,14 @@ const CARDS = [
     title: 'Staff Constraints',
     description: "View each nurse's weekly shift preferences and unavailability at a glance",
     gradient: 'from-violet-500 to-pink-500',
+    manager: true,
+  },
+  {
+    to: '/manage/fairness',
+    icon: <FiPieChart size={22} />,
+    title: 'Fairness & Analytics',
+    description: 'Verify equal distribution of weekend and night shifts across all nurses',
+    gradient: 'from-teal-500 to-cyan-600',
     manager: true,
   },
 ];

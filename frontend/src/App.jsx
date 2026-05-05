@@ -11,6 +11,7 @@ import ManageUsers from './pages/ManageUsers';
 import ShiftHoursSummaryPage from './pages/ShiftHoursSummaryPage';
 import SwapMarketplace from './pages/SwapMarketplace';
 import AllConstraints from './pages/AllConstraints';
+import FairnessDashboard from './pages/FairnessDashboard';
 
 function PrivateRoute({ children }) {
   const { user, loading } = useAuth();
@@ -42,6 +43,7 @@ export default function App() {
           <Route path="/manage/schedule" element={<ManagerRoute><ManageSchedule /></ManagerRoute>} />
           <Route path="/manage/users" element={<ManagerRoute><ManageUsers /></ManagerRoute>} />
           <Route path="/manage/constraints" element={<ManagerRoute><AllConstraints /></ManagerRoute>} />
+          <Route path="/manage/fairness" element={<ManagerRoute><FairnessDashboard /></ManagerRoute>} />
           <Route path="*" element={<Navigate to="/dashboard" />} />
         </Routes>
       </main>
