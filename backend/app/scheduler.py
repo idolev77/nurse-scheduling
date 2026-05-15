@@ -26,13 +26,15 @@ Phase 3 — Stats Update:
 
 from __future__ import annotations
 
+import logging
 import math
 import random
 from dataclasses import dataclass, field
-from datetime import date, timedelta, datetime
-from typing import Dict, List, Set, Tuple
+from datetime import date, datetime, timedelta
+from typing import Dict, List, Optional, Set, Tuple
 
 import networkx as nx
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app.models import (
@@ -40,6 +42,11 @@ from app.models import (
     Schedule, Shift, NurseShiftStats,
     ShiftType, ConstraintType, RequestStatus, RoleEnum,
 )
+
+# ═══════════════════════════════════════════════════════════
+#  Module logger
+# ═══════════════════════════════════════════════════════════
+logger = logging.getLogger(__name__)
 
 # ═══════════════════════════════════════════════════════════
 #  Fatigue-index weights (tunable constants)
@@ -188,7 +195,7 @@ def _select_nurse_by_fairness(
     db: Session,
     candidates: List[int],
     shift_date: date,
-    local_extra_fatigue: Dict[int, float] = None,
+    local_extra_fatigue: Optional[Dict[int, float]] = None,
 ) -> int:
     """
     Given a list of *candidate* nurse IDs, return the one with the
@@ -242,19 +249,31 @@ def _force_fill_shifts(
     shifts: List[_ShiftInfo],
     nurses: List[_NurseInfo],
     hard_blocks: Set[Tuple[int, date, ShiftType]],
+    leave_blocks: Set[Tuple[int, date, ShiftType]],
 ) -> Tuple[List[dict], List[str]]:
     """
     Scan *assignments* for any shift that is under-staffed relative to
     its ``required_staff`` quota and fill the gap using the fairness
     engine.
 
+    Parameters
+    ----------
+    db            : Active SQLAlchemy session (used for fairness lookups).
+    assignments   : Assignments produced by the MCMF phase.
+    shifts        : Lightweight shift descriptors for the target week.
+    nurses        : Lightweight nurse descriptors eligible for the dept.
+    hard_blocks   : All hard blocks honoured by MCMF
+                    (CANNOT_WORK constraints + APPROVED leave).
+    leave_blocks  : APPROVED-leave subset of ``hard_blocks``. This is
+                    the ONLY block-set that survives Tier 4 override
+                    — a nurse on approved leave is never force-assigned.
+
     Eligibility tiers (tried in order, stopping at the first non-empty list):
-      Tier 1 — preferred: not CANNOT_WORK, not assigned today, under weekly cap
-      Tier 2 — relax capacity: not CANNOT_WORK, not assigned today
-      Tier 3 — relax same-day: not CANNOT_WORK (allow multi-shift same day)
-      Tier 4 — override CANNOT_WORK: pick the least-burdened nurse regardless
-                (the ONLY constraint that is NEVER relaxed: same nurse in
-                 the exact same slot twice)
+      Tier 1 — ideal: not blocked, not assigned today, under weekly cap
+      Tier 2 — relax weekly capacity
+      Tier 3 — relax same-day (allow multi-shift, never same slot)
+      Tier 4 — override CANNOT_WORK (last resort) — still respects leave
+                and never duplicates the exact same (nurse, date, slot).
 
     Returns
     -------
@@ -328,24 +347,31 @@ def _force_fill_shifts(
                 ]
 
             # ── Tier 4: override CANNOT_WORK (true last resort) ─────────────
-            # Same-slot duplication is the only constraint that is NEVER lifted.
+            # APPROVED leave and same-slot duplication are NEVER lifted.
             if not eligible:
                 eligible = [
                     nid for nid in nurse_ids
                     if (nid, shift.date, shift.shift_type) not in nurse_slot_assigned
+                    and (nid, shift.date, shift.shift_type) not in leave_blocks
                 ]
                 if eligible:
-                    force_warnings.append(
+                    msg = (
                         f"WARNING: {shift.date.isoformat()} {shift.shift_type.value} "
-                        "— overriding CANNOT_WORK (all nurses blocked, fairness fallback)"
+                        "— overriding CANNOT_WORK (all nurses blocked, fairness "
+                        "fallback). APPROVED leave is still respected."
                     )
+                    force_warnings.append(msg)
+                    logger.warning(msg)
 
             if not eligible:
-                # Truly impossible: required_staff > total nurses
-                force_warnings.append(
+                # Truly impossible: every remaining nurse is on leave or already in this slot
+                msg = (
                     f"CRITICAL: {shift.date.isoformat()} {shift.shift_type.value} "
-                    f"could not be filled — required_staff exceeds nurse count."
+                    f"could not be filled — every eligible nurse is on "
+                    f"APPROVED leave or already assigned to this slot."
                 )
+                force_warnings.append(msg)
+                logger.error(msg)
                 break
 
             # Pass local accumulated fatigue so each pick sees the updated
@@ -621,28 +647,50 @@ def _solve_with_constraints(
     Repeatedly solve the flow network, adding hard-constraint blocks
     after each round until no violations remain (or the repair budget
     is exhausted).
+
+    Each repair round is *scored* with :func:`evaluate_schedule`, and the
+    **best-scoring** candidate observed across rounds is returned. This
+    protects against a late repair round producing a strictly worse
+    schedule (e.g. when added blocks make the network infeasible for some
+    slots) than an earlier, almost-violation-free round.
     """
-    current_blocks = set(hard_blocks)
-    candidate = _CandidateResult()
+    current_blocks: Set[Tuple[int, date, ShiftType]] = set(hard_blocks)
+    best_candidate: Optional[_CandidateResult] = None
+    converged = False
 
     for _ in range(_MAX_REPAIR_ROUNDS):
         candidate = _solve_once(
             nurses, shifts, avail_edges, current_blocks, shift_map,
         )
+        candidate.score = evaluate_schedule(
+            candidate, shifts, nurses, avail_edges,
+        )
+
+        if best_candidate is None or candidate.score > best_candidate.score:
+            best_candidate = candidate
+
         implied_blocks = _detect_constraint_violations(
             candidate.assignments, week_start, week_end,
         )
         new_blocks = implied_blocks - current_blocks
         if not new_blocks:
+            converged = True
             break
         current_blocks |= new_blocks
-    else:
-        candidate.warnings.append(
+
+    if best_candidate is None:
+        # Defensive: should be unreachable since _MAX_REPAIR_ROUNDS >= 1.
+        best_candidate = _CandidateResult()
+
+    if not converged:
+        msg = (
             "Hard-constraint repair did not fully converge within "
             f"{_MAX_REPAIR_ROUNDS} rounds."
         )
+        best_candidate.warnings.append(msg)
+        logger.warning(msg)
 
-    return candidate
+    return best_candidate
 
 
 # ═══════════════════════════════════════════════════════════
@@ -739,42 +787,50 @@ def _solve_once(
 # ═══════════════════════════════════════════════════════════
 
 _DEFAULT_ITERATIONS = 50
+_NO_IMPROVEMENT_PATIENCE = 10  # early-exit after N iterations without improvement
 
 
-def generate_schedule(
+# ─── 5a. Input loading ──────────────────────────────────────
+
+def _load_inputs(
     db: Session,
     department_id: int,
     week_start: date,
-    iterations: int = _DEFAULT_ITERATIONS,
-) -> Tuple["Schedule", List[str], int, int]:
+    week_end: date,
+) -> Tuple[List[_NurseInfo], List[_ShiftInfo], Dict[int, _ShiftInfo], List[int]]:
     """
-    Generate a weekly schedule using iterative Min-Cost Max-Flow.
+    Validate the department exists and load nurses + shifts for the week.
 
-    Runs *iterations* rounds with light input randomisation, scores
-    each candidate, and persists only the best one.
+    Returns
+    -------
+    nurses     : detached lightweight nurse descriptors.
+    shifts     : detached lightweight shift descriptors.
+    shift_map  : {shift_id: _ShiftInfo} fast lookup.
+    nurse_ids  : convenience list of nurse primary keys.
 
-    Returns ``(schedule, warnings, total_required, total_assigned)``.
+    Raises
+    ------
+    ValueError
+        If the department is missing, has no active nurses, or no shifts
+        have been prepared for the requested week.
     """
-
-    # ── Validate & fetch data from DB ──────────────────
-    department = db.query(Department).filter(Department.id == department_id).first()
-    if not department:
+    department = (
+        db.query(Department).filter(Department.id == department_id).first()
+    )
+    if department is None:
         raise ValueError("Department not found")
 
     nurses_orm = (
         db.query(User)
         .filter(
             User.department_id == department_id,
-            User.is_active == True,
+            User.is_active == True,  # noqa: E712 — SQLAlchemy column comparison
             User.role == RoleEnum.NURSE,
         )
         .all()
     )
     if not nurses_orm:
         raise ValueError("No active nurses in department")
-
-    nurse_ids = [n.id for n in nurses_orm]
-    week_end = week_start + timedelta(days=6)
 
     shifts_orm = (
         db.query(Shift)
@@ -791,22 +847,60 @@ def generate_schedule(
             "Please prepare shifts before generating a schedule."
         )
 
-    # ── Build lightweight copies (detached from session) ──
     nurses: List[_NurseInfo] = [
         _NurseInfo(id=n.id, employment_percentage=n.employment_percentage)
         for n in nurses_orm
     ]
     shifts: List[_ShiftInfo] = [
-        _ShiftInfo(id=s.id, date=s.date, shift_type=s.shift_type,
-                   required_staff=s.required_staff)
+        _ShiftInfo(
+            id=s.id,
+            date=s.date,
+            shift_type=s.shift_type,
+            required_staff=s.required_staff,
+        )
         for s in shifts_orm
     ]
     shift_map: Dict[int, _ShiftInfo] = {s.id: s for s in shifts}
+    nurse_ids: List[int] = [n.id for n in nurses]
 
-    # Hard blocks
+    logger.info(
+        "Loaded %d nurses and %d shifts for department=%s week_start=%s",
+        len(nurses), len(shifts), department_id, week_start.isoformat(),
+    )
+    return nurses, shifts, shift_map, nurse_ids
+
+
+# ─── 5b. Availability + block construction ──────────────────
+
+def _build_avail_edges(
+    db: Session,
+    nurses: List[_NurseInfo],
+    shifts: List[_ShiftInfo],
+    nurse_ids: List[int],
+    week_start: date,
+    week_end: date,
+) -> Tuple[
+    List[_AvailEdge],
+    Set[Tuple[int, date, ShiftType]],
+    Set[Tuple[int, date, ShiftType]],
+]:
+    """
+    Build MCMF availability edges and the two block-sets used downstream.
+
+    Returns
+    -------
+    avail_edges  : nurse→shift availability edges with preference levels.
+    hard_blocks  : combined block-set used by MCMF and Tier 1–3 force-fill
+                   (CANNOT_WORK constraints + APPROVED leave).
+    leave_blocks : APPROVED-leave subset of ``hard_blocks``. Used by
+                   Tier 4 force-fill which may override CANNOT_WORK but
+                   never overrides approved leave.
+    """
     hard_blocks: Set[Tuple[int, date, ShiftType]] = set()
+    leave_blocks: Set[Tuple[int, date, ShiftType]] = set()
 
-    constraints = (
+    # CANNOT_WORK constraints → hard_blocks (overridable in Tier 4)
+    cannot_work = (
         db.query(ShiftConstraint)
         .filter(
             ShiftConstraint.nurse_id.in_(nurse_ids),
@@ -816,9 +910,10 @@ def generate_schedule(
         )
         .all()
     )
-    for c in constraints:
+    for c in cannot_work:
         hard_blocks.add((c.nurse_id, c.date, c.shift_type))
 
+    # APPROVED leave → hard_blocks AND leave_blocks (NEVER overridable)
     leaves = (
         db.query(LeaveRequest)
         .filter(
@@ -831,17 +926,18 @@ def generate_schedule(
     )
     for leave in leaves:
         d = max(leave.start_date, week_start)
-        while d <= min(leave.end_date, week_end):
+        last = min(leave.end_date, week_end)
+        while d <= last:
             for st in ShiftType:
                 hard_blocks.add((leave.nurse_id, d, st))
+                leave_blocks.add((leave.nurse_id, d, st))
             d += timedelta(days=1)
 
-    # Build availability edges from constraints only.
-    # Default: every nurse is available for every shift (preference_level=2, cost=1).
-    # PREFER constraint  → preference_level=1 (cost=0, algorithm favours)
-    # PREFER_NOT constraint → preference_level=3 (cost=2, algorithm avoids)
-    # CANNOT_WORK is already in hard_blocks and will be filtered in _solve_once.
-
+    # Soft preferences override default neutral edge cost.
+    #   Default level=2 (cost 1)
+    #   PREFER     → level=1 (cost 0, favoured)
+    #   PREFER_NOT → level=3 (cost 2, avoided)
+    #   CANNOT_WORK is already in hard_blocks and filtered in _solve_once.
     soft_constraints = (
         db.query(ShiftConstraint)
         .filter(
@@ -855,39 +951,186 @@ def generate_schedule(
         )
         .all()
     )
+    pref_override: Dict[Tuple[int, date, ShiftType], int] = {
+        (c.nurse_id, c.date, c.shift_type):
+            1 if c.constraint_type == ConstraintType.PREFER else 3
+        for c in soft_constraints
+    }
 
-    # Map (nurse_id, date, shift_type) -> preference_level override
-    pref_override: Dict[Tuple[int, date, ShiftType], int] = {}
-    for c in soft_constraints:
-        level = 1 if c.constraint_type == ConstraintType.PREFER else 3
-        pref_override[(c.nurse_id, c.date, c.shift_type)] = level
+    avail_edges: List[_AvailEdge] = [
+        _AvailEdge(
+            nurse_id=nurse.id,
+            shift_id=shift.id,
+            capacity=1,
+            preference_level=pref_override.get(
+                (nurse.id, shift.date, shift.shift_type), 2,
+            ),
+        )
+        for nurse in nurses
+        for shift in shifts
+    ]
 
-    avail_edges: List[_AvailEdge] = []
-    for nurse in nurses:
-        for shift in shifts:
-            level = pref_override.get((nurse.id, shift.date, shift.shift_type), 2)
-            avail_edges.append(
-                _AvailEdge(
-                    nurse_id=nurse.id,
-                    shift_id=shift.id,
-                    capacity=1,
-                    preference_level=level,
-                )
+    logger.debug(
+        "Built %d availability edges; hard_blocks=%d leave_blocks=%d",
+        len(avail_edges), len(hard_blocks), len(leave_blocks),
+    )
+    return avail_edges, hard_blocks, leave_blocks
+
+
+# ─── 5c. Persistence ────────────────────────────────────────
+
+def _persist_schedule(
+    db: Session,
+    department_id: int,
+    week_start: date,
+    filled_assignments: List[dict],
+) -> Schedule:
+    """
+    Replace any unpublished schedule for the week and persist the new one
+    along with all assignments + fairness-stat updates.
+
+    Wraps the write transaction in ``try / except SQLAlchemyError``;
+    any DB failure triggers ``db.rollback()`` and the original exception
+    is re-raised so the API layer can return a 5xx with context.
+
+    Raises
+    ------
+    ValueError
+        If a published schedule already exists for the week.
+    SQLAlchemyError
+        Re-raised after rollback on DB failure.
+    """
+    existing = (
+        db.query(Schedule)
+        .filter(
+            Schedule.department_id == department_id,
+            Schedule.week_start_date == week_start,
+        )
+        .first()
+    )
+    if existing and existing.is_published:
+        raise ValueError(
+            "A published schedule already exists for this week. "
+            "You cannot regenerate a published schedule."
+        )
+
+    try:
+        if existing:
+            db.delete(existing)
+            db.flush()
+
+        schedule = Schedule(
+            department_id=department_id, week_start_date=week_start,
+        )
+        db.add(schedule)
+        db.flush()
+
+        for a in filled_assignments:
+            forced_flag = bool(a.pop("forced", False))
+            nurse_id = a["nurse_id"]
+            shift_date = a["date"]
+            shift_type = a["shift_type"]
+            db.add(ShiftAssignment(schedule_id=schedule.id, **a))
+            # Phase 3: Update fairness stats immediately.
+            update_nurse_stats(
+                db,
+                nurse_id=nurse_id,
+                shift_date=shift_date,
+                shift_type=shift_type,
+                forced=forced_flag,
             )
 
-    # ── Iterative optimisation loop ────────────────────
-    best: _CandidateResult = _CandidateResult()   # score = -inf
+        db.commit()
+        db.refresh(schedule)
+    except SQLAlchemyError:
+        db.rollback()
+        logger.exception(
+            "DB failure while persisting schedule for department=%s week=%s",
+            department_id, week_start.isoformat(),
+        )
+        raise
+
+    return schedule
+
+
+# ─── 5d. Public API ─────────────────────────────────────────
+
+def generate_schedule(
+    db: Session,
+    department_id: int,
+    week_start: date,
+    iterations: int = _DEFAULT_ITERATIONS,
+) -> Tuple[Schedule, List[str], int, int, List[dict]]:
+    """
+    Generate a weekly schedule using iterative Min-Cost Max-Flow.
+
+    Pipeline
+    --------
+    Phase 1  Iterative MCMF (with light input randomisation).
+             Best candidate by :func:`evaluate_schedule` is kept.
+             Early-exits if no improvement for
+             ``_NO_IMPROVEMENT_PATIENCE`` consecutive iterations.
+    Phase 2  Fairness-aware Force-Assignment fills any remaining gaps,
+             never overriding APPROVED leave.
+    Phase 3  ``NurseShiftStats`` rows are upserted for every persisted
+             assignment (forced assignments carry an extra penalty).
+
+    Parameters
+    ----------
+    db             : Active SQLAlchemy session.
+    department_id  : Target department.
+    week_start     : Monday (or whichever weekday begins the week) of
+                     the 7-day window to schedule.
+    iterations     : Hard upper bound on Phase-1 iterations.
+
+    Returns
+    -------
+    schedule              : Newly persisted ``Schedule`` row.
+    warnings              : Human-readable warnings (Phase 1 + Phase 2).
+    total_required        : Sum of ``required_staff`` across all shifts.
+    total_assigned_final  : Slots filled after Phase 2.
+    iteration_logs        : Per-iteration scoring trace; the winning
+                            entry has ``is_best=True``.
+
+    Raises
+    ------
+    ValueError
+        Bad inputs (missing dept, no nurses, no shifts, published week).
+    SQLAlchemyError
+        Persistence failure after rollback.
+    """
+    week_end = week_start + timedelta(days=6)
+    logger.info(
+        "Schedule generation start: department=%s week=%s..%s iterations=%d",
+        department_id, week_start.isoformat(), week_end.isoformat(), iterations,
+    )
+
+    # ── Load inputs (Phase 0) ──────────────────────────
+    nurses, shifts, shift_map, nurse_ids = _load_inputs(
+        db, department_id, week_start, week_end,
+    )
+    avail_edges, hard_blocks, leave_blocks = _build_avail_edges(
+        db, nurses, shifts, nurse_ids, week_start, week_end,
+    )
+
+    # ── Phase 1: Iterative MCMF with early-exit ────────
+    best: _CandidateResult = _CandidateResult()  # score = -inf
     iteration_logs: List[dict] = []
     best_idx: int = 0
+    rounds_since_improvement: int = 0
 
     for i in range(iterations):
-        r_nurses, r_shifts, r_avail = _randomise_inputs(nurses, shifts, avail_edges)
+        r_nurses, r_shifts, r_avail = _randomise_inputs(
+            nurses, shifts, avail_edges,
+        )
 
         candidate = _solve_with_constraints(
             r_nurses, r_shifts, r_avail, hard_blocks, shift_map,
             week_start, week_end,
         )
-        candidate.score = evaluate_schedule(candidate, shifts, nurses, avail_edges)
+        candidate.score = evaluate_schedule(
+            candidate, shifts, nurses, avail_edges,
+        )
 
         iteration_logs.append({
             "iteration": i + 1,
@@ -900,55 +1143,57 @@ def generate_schedule(
         if candidate.score > best.score:
             best = candidate
             best_idx = i
+            rounds_since_improvement = 0
+            logger.debug(
+                "Iteration %d new best score=%.2f assigned=%d/%d",
+                i + 1, candidate.score,
+                candidate.total_assigned, candidate.total_required,
+            )
+        else:
+            rounds_since_improvement += 1
+            if rounds_since_improvement >= _NO_IMPROVEMENT_PATIENCE:
+                logger.info(
+                    "Early-exit at iteration %d: no improvement for %d rounds",
+                    i + 1, _NO_IMPROVEMENT_PATIENCE,
+                )
+                break
 
-    # Mark the winning iteration
     if iteration_logs:
         iteration_logs[best_idx]["is_best"] = True
 
-    # ── Phase 2: Force-Assignment (guarantee 100 % coverage) ──
+    logger.info(
+        "Phase 1 done. Best score=%.2f assigned=%d/%d after %d iterations",
+        best.score, best.total_assigned, best.total_required,
+        len(iteration_logs),
+    )
+
+    # ── Phase 2: Force-Assignment ──────────────────────
     filled_assignments, force_warnings = _force_fill_shifts(
-        db, best.assignments, shifts, nurses, hard_blocks,
+        db, best.assignments, shifts, nurses, hard_blocks, leave_blocks,
     )
     all_warnings = best.warnings + force_warnings
-
-    # Recalculate totals after force-fill
     total_assigned_final = len(filled_assignments)
 
-    # ── Persist winning schedule to DB ─────────────────
-    existing = (
-        db.query(Schedule)
-        .filter(
-            Schedule.department_id == department_id,
-            Schedule.week_start_date == week_start,
-        )
-        .first()
+    logger.info(
+        "Phase 2 done. Force-assigned %d additional slots; final coverage=%d/%d",
+        total_assigned_final - best.total_assigned,
+        total_assigned_final, best.total_required,
     )
-    if existing:
-        if existing.is_published:
-            raise ValueError(
-                "A published schedule already exists for this week. "
-                "You cannot regenerate a published schedule."
-            )
-        db.delete(existing)
-        db.flush()
 
-    schedule = Schedule(department_id=department_id, week_start_date=week_start)
-    db.add(schedule)
-    db.flush()
+    # ── Phase 3: Persist (fairness stats updated inside) ──
+    schedule = _persist_schedule(
+        db, department_id, week_start, filled_assignments,
+    )
 
-    for a in filled_assignments:
-        forced_flag = a.pop("forced", False)
-        db.add(ShiftAssignment(schedule_id=schedule.id, **a))
-        # ── Phase 3: Update fairness stats immediately ─
-        update_nurse_stats(
-            db,
-            nurse_id=a["nurse_id"],
-            shift_date=a["date"],
-            shift_type=a["shift_type"],
-            forced=forced_flag,
-        )
-
-    db.commit()
-    db.refresh(schedule)
-    return schedule, all_warnings, best.total_required, total_assigned_final, iteration_logs
+    logger.info(
+        "Schedule generation complete: schedule_id=%s warnings=%d",
+        schedule.id, len(all_warnings),
+    )
+    return (
+        schedule,
+        all_warnings,
+        best.total_required,
+        total_assigned_final,
+        iteration_logs,
+    )
 
