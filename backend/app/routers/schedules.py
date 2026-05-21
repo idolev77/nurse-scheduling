@@ -5,7 +5,7 @@ from app.database import get_db
 from app.models import Schedule, ShiftAssignment, User, RoleEnum
 from app.schemas import ScheduleOut, ShiftAssignmentOut, GenerateScheduleRequest, ScheduleGenerateResult
 from app.auth import get_current_user, require_role
-from app.scheduler import generate_schedule
+from app.scheduler import generate_schedule, update_nurse_stats
 
 router = APIRouter(prefix="/api/schedules", tags=["Schedules"])
 
@@ -90,6 +90,20 @@ def publish_schedule(
     schedule = db.query(Schedule).filter(Schedule.id == schedule_id).first()
     if not schedule:
         raise HTTPException(status_code=404, detail="Schedule not found")
+    if schedule.is_published:
+        # Idempotent: already published, do not double-count fairness stats.
+        return _format_schedule(schedule, db)
+
+    # Accumulate fairness stats now that the schedule is final.
+    for a in schedule.assignments:
+        update_nurse_stats(
+            db,
+            nurse_id=a.nurse_id,
+            shift_date=a.date,
+            shift_type=a.shift_type,
+            forced=False,
+        )
+
     schedule.is_published = True
     db.commit()
     db.refresh(schedule)

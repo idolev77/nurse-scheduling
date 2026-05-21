@@ -476,6 +476,9 @@ def evaluate_schedule(
         nurse_day_map.setdefault(a["nurse_id"], {}).setdefault(a["date"], set()).add(a["shift_type"])
     for nid, day_map in nurse_day_map.items():
         for d, types in day_map.items():
+            # Same-day double shifts: each extra shift beyond the first is a violation.
+            if len(types) > 1:
+                violation_count += len(types) - 1
             nxt = d + timedelta(days=1)
             nxt_types = day_map.get(nxt, set())
             if ShiftType.NIGHT in types:
@@ -716,30 +719,49 @@ def _solve_once(
     hard_blocks: Set[Tuple[int, date, ShiftType]],
     shift_map: Dict[int, _ShiftInfo],
 ) -> _CandidateResult:
-    """Build the flow network, solve, and return a _CandidateResult."""
+    """
+    Build the flow network, solve, and return a _CandidateResult.
+
+    Network layout (4 layers — enforces ONE shift per nurse per day at the
+    network level, so the solver can never produce same-day doubles):
+
+        SOURCE ──cap=weekly──▶ nurse_<id>
+            ──cap=1──▶ nd_<id>_<date>          # one-shift-per-day cap
+                ──cap=1, cost=pref-1──▶ shift_<sid>
+                    ──cap=required_staff──▶ SINK
+    """
 
     G = nx.DiGraph()
     SOURCE = "S"
     SINK = "T"
 
-    # Source -> Nurse edges
+    # Source -> Nurse edges (weekly capacity)
     for nurse in nurses:
         node = f"nurse_{nurse.id}"
         cap = _nurse_capacity(nurse.employment_percentage)
         G.add_edge(SOURCE, node, capacity=cap, weight=0)
 
-    # Nurse -> Shift edges
+    # Nurse -> NurseDay -> Shift edges (cap=1 on nurse->nurse_day enforces
+    # one-shift-per-day as a hard network constraint).
+    nurse_day_added: Set[Tuple[int, date]] = set()
     for avail in avail_edges:
         shift = shift_map.get(avail.shift_id)
         if not shift:
             continue
         if (avail.nurse_id, shift.date, shift.shift_type) in hard_blocks:
             continue
+
         nurse_node = f"nurse_{avail.nurse_id}"
+        nd_node = f"nd_{avail.nurse_id}_{shift.date.isoformat()}"
         shift_node = f"shift_{avail.shift_id}"
+
+        if (avail.nurse_id, shift.date) not in nurse_day_added:
+            G.add_edge(nurse_node, nd_node, capacity=1, weight=0)
+            nurse_day_added.add((avail.nurse_id, shift.date))
+
         # preference_level: 1=prefer (cost 0), 2=neutral (cost 1), 3=prefer_not (cost 2)
         cost = avail.preference_level - 1
-        G.add_edge(nurse_node, shift_node, capacity=avail.capacity, weight=cost)
+        G.add_edge(nd_node, shift_node, capacity=avail.capacity, weight=cost)
 
     # Shift -> Sink edges
     for shift in shifts:
@@ -752,12 +774,14 @@ def _solve_once(
     except nx.NetworkXUnfeasible:
         flow_dict = {}
 
-    # Extract assignments
+    # Extract assignments — flow now goes via nd_<nurse>_<date> nodes.
     raw_assignments: List[dict] = []
-    for nurse_node, targets in flow_dict.items():
-        if not nurse_node.startswith("nurse_"):
+    for nd_node, targets in flow_dict.items():
+        if not nd_node.startswith("nd_"):
             continue
-        nurse_id = int(nurse_node.split("_", 1)[1])
+        # nd_<nurse_id>_<isodate>
+        _, nurse_id_str, _ = nd_node.split("_", 2)
+        nurse_id = int(nurse_id_str)
         for shift_node, flow_val in targets.items():
             if flow_val > 0 and shift_node.startswith("shift_"):
                 shift_id = int(shift_node.split("_", 1)[1])
@@ -768,15 +792,15 @@ def _solve_once(
                     "shift_type": s.shift_type,
                 })
 
-    # Warnings
+    # Warnings — count flow into each shift via its incoming nd_ edges.
     warnings: List[str] = []
     total_required = 0
     total_assigned = 0
     for shift in shifts:
         shift_node = f"shift_{shift.id}"
         filled = 0
-        for nurse_node, targets in flow_dict.items():
-            if nurse_node.startswith("nurse_"):
+        for nd_node, targets in flow_dict.items():
+            if nd_node.startswith("nd_"):
                 filled += targets.get(shift_node, 0)
         total_required += shift.required_staff
         total_assigned += filled
@@ -1020,6 +1044,46 @@ def _build_avail_edges(
 
 # ─── 5c. Persistence ────────────────────────────────────────
 
+def _reverse_nurse_stats(db: Session, schedule_id: int) -> None:
+    """
+    Subtract the contribution of every ShiftAssignment in *schedule_id*
+    from NurseShiftStats before the schedule is deleted.
+
+    This prevents stat inflation when an unpublished schedule is
+    regenerated multiple times — each new Generate call first undoes
+    the previous one's stats, then re-adds the new assignments.
+
+    Note: ``forced_assignments_count`` cannot be reversed because the
+    ``forced`` flag is not persisted on ShiftAssignment rows.  All other
+    counters (total, night, weekend) are corrected precisely.  Fatigue is
+    recomputed from the corrected counters via ``_recompute_fatigue``.
+    """
+    old_assignments = (
+        db.query(ShiftAssignment)
+        .filter(ShiftAssignment.schedule_id == schedule_id)
+        .all()
+    )
+    for a in old_assignments:
+        row = (
+            db.query(NurseShiftStats)
+            .filter_by(
+                nurse_id=a.nurse_id,
+                period_year=a.date.year,
+                period_month=a.date.month,
+            )
+            .first()
+        )
+        if row is None:
+            continue
+        row.total_shifts_count   = max(0, row.total_shifts_count - 1)
+        if a.shift_type == ShiftType.NIGHT:
+            row.night_shifts_count = max(0, row.night_shifts_count - 1)
+        if _is_weekend(a.date):
+            row.weekend_shifts_count = max(0, row.weekend_shifts_count - 1)
+        row.fatigue_index = _recompute_fatigue(row)
+        row.updated_at = datetime.utcnow()
+
+
 def _persist_schedule(
     db: Session,
     department_id: int,
@@ -1057,6 +1121,8 @@ def _persist_schedule(
 
     try:
         if existing:
+            # Stats are only added on Publish, so deleting an unpublished
+            # schedule does NOT require reversing fairness counters.
             db.delete(existing)
             db.flush()
 
@@ -1067,19 +1133,11 @@ def _persist_schedule(
         db.flush()
 
         for a in filled_assignments:
-            forced_flag = bool(a.pop("forced", False))
-            nurse_id = a["nurse_id"]
-            shift_date = a["date"]
-            shift_type = a["shift_type"]
+            # Drop the in-memory "forced" flag (not persisted on the row);
+            # forced bookkeeping happens at Publish time via the dedicated
+            # endpoint, which re-derives stats from the persisted rows.
+            a.pop("forced", None)
             db.add(ShiftAssignment(schedule_id=schedule.id, **a))
-            # Phase 3: Update fairness stats immediately.
-            update_nurse_stats(
-                db,
-                nurse_id=nurse_id,
-                shift_date=shift_date,
-                shift_type=shift_type,
-                forced=forced_flag,
-            )
 
         db.commit()
         db.refresh(schedule)
