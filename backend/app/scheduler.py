@@ -270,10 +270,11 @@ def _force_fill_shifts(
 
     Eligibility tiers (tried in order, stopping at the first non-empty list):
       Tier 1 — ideal: not blocked, not assigned today, under weekly cap
-      Tier 2 — relax weekly capacity
-      Tier 3 — relax same-day (allow multi-shift, never same slot)
-      Tier 4 — override CANNOT_WORK (last resort) — still respects leave
-                and never duplicates the exact same (nurse, date, slot).
+      Tier 2 — relax weekly capacity (still one shift per day, no
+                CANNOT_WORK override)
+      Tier 3 — override CANNOT_WORK (last resort) — still respects
+                leave AND the one-shift-per-day hard rule, and never
+                duplicates the exact same (nurse, date, slot).
 
     Returns
     -------
@@ -338,27 +339,21 @@ def _force_fill_shifts(
                     and not nurse_date_assigned.get((nid, shift.date), False)
                 ]
 
-            # ── Tier 3: relax same-day (allow multi-shift, not same slot) ───
-            if not eligible:
-                eligible = [
-                    nid for nid in nurse_ids
-                    if (nid, shift.date, shift.shift_type) not in nurse_slot_assigned
-                    and (nid, shift.date, shift.shift_type) not in hard_blocks
-                ]
-
-            # ── Tier 4: override CANNOT_WORK (true last resort) ─────────────
-            # APPROVED leave and same-slot duplication are NEVER lifted.
+            # ── Tier 3: override CANNOT_WORK (true last resort) ─────────────
+            # APPROVED leave, same-slot duplication, and the one-shift-
+            # per-day hard rule are NEVER lifted.
             if not eligible:
                 eligible = [
                     nid for nid in nurse_ids
                     if (nid, shift.date, shift.shift_type) not in nurse_slot_assigned
                     and (nid, shift.date, shift.shift_type) not in leave_blocks
+                    and not nurse_date_assigned.get((nid, shift.date), False)
                 ]
                 if eligible:
                     msg = (
                         f"WARNING: {shift.date.isoformat()} {shift.shift_type.value} "
                         "— overriding CANNOT_WORK (all nurses blocked, fairness "
-                        "fallback). APPROVED leave is still respected."
+                        "fallback). APPROVED leave and one-shift-per-day are still respected."
                     )
                     force_warnings.append(msg)
                     logger.warning(msg)
@@ -555,6 +550,8 @@ def _detect_constraint_violations(
     4. **Max 2 night shifts per week** per nurse.
     5. **Max 2 consecutive night shifts**: the 3rd+ consecutive night
        is blocked.
+    6. **No double shifts on the same day**: a nurse may work at most
+       one shift per calendar day.
     """
     blocks: Set[Tuple[int, date, ShiftType]] = set()
 
@@ -630,6 +627,21 @@ def _detect_constraint_violations(
             if (night_days[i] == night_days[i - 1] + timedelta(days=1)
                     and night_days[i - 1] == night_days[i - 2] + timedelta(days=1)):
                 blocks.add((nid, night_days[i], ShiftType.NIGHT))
+
+        # ── 6. No double shifts on the same day (proactive) ──
+        #    A nurse must not work more than one shift on the same
+        #    calendar day. If the current solution already contains
+        #    multiple shifts for this nurse on a day, keep the
+        #    earliest one (by canonical enum order) and block the
+        #    rest so subsequent repair rounds eliminate the double.
+        _shift_order = list(ShiftType)
+        for d, types in day_types.items():
+            if not types:
+                continue
+            keep = min(types, key=_shift_order.index)
+            for st in ShiftType:
+                if st != keep:
+                    blocks.add((nid, d, st))
 
     return blocks
 
@@ -957,18 +969,47 @@ def _build_avail_edges(
         for c in soft_constraints
     }
 
-    avail_edges: List[_AvailEdge] = [
-        _AvailEdge(
-            nurse_id=nurse.id,
-            shift_id=shift.id,
-            capacity=1,
-            preference_level=pref_override.get(
-                (nurse.id, shift.date, shift.shift_type), 2,
-            ),
+    # ── Soft: avoid two consecutive weekends ───────────────────
+    # Look up assignments in the 7 days BEFORE week_start; any nurse
+    # who worked a Fri/Sat/Sun there is discouraged (level=3) from
+    # this week's weekend shifts. An explicit PREFER (level 1) still
+    # wins — nurses opting in are not overridden.
+    prev_week_start = week_start - timedelta(days=7)
+    prev_assignments = (
+        db.query(ShiftAssignment)
+        .filter(
+            ShiftAssignment.nurse_id.in_(nurse_ids),
+            ShiftAssignment.date >= prev_week_start,
+            ShiftAssignment.date < week_start,
         )
-        for nurse in nurses
-        for shift in shifts
-    ]
+        .all()
+    )
+    prev_weekend_nurses: Set[int] = {
+        a.nurse_id for a in prev_assignments if _is_weekend(a.date)
+    }
+
+    avail_edges: List[_AvailEdge] = []
+    for nurse in nurses:
+        for shift in shifts:
+            key = (nurse.id, shift.date, shift.shift_type)
+            level = pref_override.get(key, 2)
+            # Bump to PREFER_NOT for weekend shifts of nurses who
+            # already worked the previous weekend, unless they
+            # explicitly preferred this slot.
+            if (
+                level != 1
+                and _is_weekend(shift.date)
+                and nurse.id in prev_weekend_nurses
+            ):
+                level = 3
+            avail_edges.append(
+                _AvailEdge(
+                    nurse_id=nurse.id,
+                    shift_id=shift.id,
+                    capacity=1,
+                    preference_level=level,
+                )
+            )
 
     logger.debug(
         "Built %d availability edges; hard_blocks=%d leave_blocks=%d",
