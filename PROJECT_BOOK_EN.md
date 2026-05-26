@@ -371,7 +371,7 @@ def require_role(*roles: RoleEnum):
 The scheduling engine consists of five sequential phases:
 
 #### Phase 1: Flow Graph Construction
-* Source vertex `source` → nurse vertex `nurse_i` with capacity $\lceil \text{employment\_percentage}/100 \times 6 \rceil$ and cost 0.
+* Source vertex `source` → nurse vertex `nurse_i` with capacity $\lceil \text{employmentPercentage} / 100 \times 6 \rceil$ and cost 0.
 * `nurse_i → shift_j` with capacity 1 and cost ∈ {0, 1, 2}: `PREFER` → 0, default → 1, `PREFER_NOT` → 2.
 * `shift_j → sink` with capacity `required_staff`.
 * Edges falling under a static hard block (`CANNOT_WORK` constraint or approved leave) are **omitted entirely** from the graph.
@@ -415,7 +415,7 @@ After MCMF, any still-unfilled slot enters force-fill. The eligible nurse with t
 For every persisted assignment, `NurseShiftStats` is updated via `update_nurse_stats`, and the fatigue formula is recomputed:
 
 $$
-\text{fatigue\_index} = 2.0 \cdot n_{\text{night}} + 1.5 \cdot n_{\text{weekend}} + 3.0 \cdot n_{\text{forced}}
+\text{fatigueIndex} = 2.0 \cdot n_{\text{night}} + 1.5 \cdot n_{\text{weekend}} + 3.0 \cdot n_{\text{forced}}
 $$
 
 ### 5.4 End-to-End Data Flow — Schedule Generation
@@ -446,8 +446,11 @@ sequenceDiagram
     end
     S->>S: pick best candidate
     S->>S: force-fill (fairness)
-    S->>D: BEGIN; INSERT schedule, assignments; UPDATE stats; COMMIT
-    S-->>F: ScheduleResponse + warnings
+    S->>D: BEGIN transaction
+    S->>D: INSERT schedule and assignments
+    S->>D: UPDATE nurse_shift_stats
+    S->>D: COMMIT
+    S-->>F: ScheduleResponse with warnings
     F-->>U: 201 Created
 ```
 

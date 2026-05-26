@@ -374,7 +374,7 @@ def require_role(*roles: RoleEnum):
 מנוע השיבוץ מורכב מחמישה שלבים סדרתיים:
 
 #### שלב 1: בניית גרף הזרימה
-* קדקוד-מקור `source` → קדקוד אחות `nurse_i` בקיבול $\lceil \text{employment\_percentage}/100 \times 6 \rceil$ ובעלות 0.
+* קדקוד-מקור `source` → קדקוד אחות `nurse_i` בקיבול $\lceil \text{employmentPercentage} / 100 \times 6 \rceil$ ובעלות 0.
 * `nurse_i → shift_j` בקיבול 1 ובעלות ∈ {0,1,2}: `PREFER` → 0, ברירת מחדל → 1, `PREFER_NOT` → 2.
 * `shift_j → sink` בקיבול `required_staff`.
 * קצוות הנופלים תחת אילוץ סטטי קשה (`CANNOT_WORK` או חופשה מאושרת) מושמטים מלכתחילה.
@@ -418,7 +418,7 @@ def require_role(*roles: RoleEnum):
 לכל שיבוץ נשמר, מתעדכנת `NurseShiftStats` באמצעות `update_nurse_stats`, ונוסחת ה-*fatigue* מחושבת מחדש:
 
 $$
-\text{fatigue\_index} = 2.0 \cdot n_{\text{night}} + 1.5 \cdot n_{\text{weekend}} + 3.0 \cdot n_{\text{forced}}
+\text{fatigueIndex} = 2.0 \cdot n_{\text{night}} + 1.5 \cdot n_{\text{weekend}} + 3.0 \cdot n_{\text{forced}}
 $$
 
 ### 5.4 זרימת הנתונים בייצור לוח (סיקוונס מלא)
@@ -449,8 +449,11 @@ sequenceDiagram
     end
     S->>S: pick best candidate
     S->>S: force-fill (fairness)
-    S->>D: BEGIN; INSERT schedule, assignments; UPDATE stats; COMMIT
-    S-->>F: ScheduleResponse + warnings
+    S->>D: BEGIN transaction
+    S->>D: INSERT schedule and assignments
+    S->>D: UPDATE nurse_shift_stats
+    S->>D: COMMIT
+    S-->>F: ScheduleResponse with warnings
     F-->>U: 201 Created
 ```
 
