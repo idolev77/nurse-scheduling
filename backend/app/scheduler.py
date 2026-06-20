@@ -240,6 +240,92 @@ def _select_nurse_by_fairness(
 
 
 # ═══════════════════════════════════════════════════════════
+#  Rest-law feasibility (shared safety net for force-fill)
+# ═══════════════════════════════════════════════════════════
+
+def _consecutive_run_including(day_set: Set[date], d: date) -> int:
+    """Length of the unbroken run of dates in *day_set* that contains *d*."""
+    length = 1
+    p = d - timedelta(days=1)
+    while p in day_set:
+        length += 1
+        p -= timedelta(days=1)
+    n = d + timedelta(days=1)
+    while n in day_set:
+        length += 1
+        n += timedelta(days=1)
+    return length
+
+
+def _would_violate_rest(
+    cand_date: date,
+    cand_type: ShiftType,
+    day_types: Dict[date, Set[ShiftType]],
+    week_start: date,
+    week_end: date,
+) -> bool:
+    """
+    Return True if placing a shift of *cand_type* on *cand_date* would break
+    a hard labour-law rest rule, given the shifts the nurse already holds
+    (*day_types*: date -> set of ShiftType worked that day).
+
+    These are the SAME hard constraints the MCMF repair loop enforces
+    proactively (:func:`_detect_constraint_violations`). In force-fill they
+    are treated as **non-overridable**: a forced assignment may breach a soft
+    preference or even CANNOT_WORK, but never a statutory rest period.
+
+    Rules checked
+    -------------
+    1. 24-h rest after Night   — no Morning/Afternoon the day after a Night
+                                 (and no Night the day before a Morning/Afternoon).
+    2. 8-h rest after Afternoon — no Morning the day after an Afternoon
+                                 (and no Afternoon the day before a Morning).
+    4. Max 2 night shifts per week.
+    5. Max 2 consecutive night shifts.
+    3. Max 6 consecutive work-days.
+
+    Rule 6 (one shift per calendar day) is enforced separately by the
+    caller's ``nurse_date_assigned`` guard.
+    """
+    prev = cand_date - timedelta(days=1)
+    nxt = cand_date + timedelta(days=1)
+    prev_types = day_types.get(prev, set())
+    nxt_types = day_types.get(nxt, set())
+
+    # ── Rule 1: 24-h rest after Night (both directions) ──
+    if cand_type in (ShiftType.MORNING, ShiftType.AFTERNOON) and ShiftType.NIGHT in prev_types:
+        return True
+    if cand_type == ShiftType.NIGHT and (
+        ShiftType.MORNING in nxt_types or ShiftType.AFTERNOON in nxt_types
+    ):
+        return True
+
+    # ── Rule 2: 8-h rest after Afternoon (both directions) ──
+    if cand_type == ShiftType.MORNING and ShiftType.AFTERNOON in prev_types:
+        return True
+    if cand_type == ShiftType.AFTERNOON and ShiftType.MORNING in nxt_types:
+        return True
+
+    if cand_type == ShiftType.NIGHT:
+        night_days = {d for d, types in day_types.items() if ShiftType.NIGHT in types}
+        # ── Rule 4: max 2 night shifts per week ──
+        if sum(1 for d in night_days if week_start <= d <= week_end) >= 2:
+            return True
+        # ── Rule 5: max 2 consecutive nights ──
+        night_days.add(cand_date)
+        if _consecutive_run_including(night_days, cand_date) > 2:
+            return True
+
+    # ── Rule 3: max 6 consecutive work-days ──
+    worked_days = set(day_types.keys())
+    worked_days.add(cand_date)
+    if _consecutive_run_including(worked_days, cand_date) > 6:
+        return True
+
+    return False
+
+
+# ═══════════════════════════════════════════════════════════
 #  Force-Assignment: guarantee 100 % shift coverage
 # ═══════════════════════════════════════════════════════════
 
@@ -250,6 +336,8 @@ def _force_fill_shifts(
     nurses: List[_NurseInfo],
     hard_blocks: Set[Tuple[int, date, ShiftType]],
     leave_blocks: Set[Tuple[int, date, ShiftType]],
+    week_start: date,
+    week_end: date,
 ) -> Tuple[List[dict], List[str]]:
     """
     Scan *assignments* for any shift that is under-staffed relative to
@@ -265,8 +353,10 @@ def _force_fill_shifts(
     hard_blocks   : All hard blocks honoured by MCMF
                     (CANNOT_WORK constraints + APPROVED leave).
     leave_blocks  : APPROVED-leave subset of ``hard_blocks``. This is
-                    the ONLY block-set that survives Tier 4 override
+                    the ONLY block-set that survives Tier 3 override
                     — a nurse on approved leave is never force-assigned.
+    week_start    : First date of the scheduling window (rest-rule bound).
+    week_end      : Last date of the scheduling window (rest-rule bound).
 
     Eligibility tiers (tried in order, stopping at the first non-empty list):
       Tier 1 — ideal: not blocked, not assigned today, under weekly cap
@@ -275,6 +365,14 @@ def _force_fill_shifts(
       Tier 3 — override CANNOT_WORK (last resort) — still respects
                 leave AND the one-shift-per-day hard rule, and never
                 duplicates the exact same (nurse, date, slot).
+
+    NON-NEGOTIABLE across ALL tiers: statutory rest rules
+    (:func:`_would_violate_rest`). A forced assignment may breach a soft
+    preference or even CANNOT_WORK, but it is never allowed to create a
+    night→next-morning, sub-8h, >2-nights/week, >2-consecutive-night, or
+    >6-consecutive-day violation. If honouring rest leaves a slot with no
+    eligible nurse, the slot is reported as a CRITICAL coverage gap rather
+    than filled illegally.
 
     Returns
     -------
@@ -306,6 +404,15 @@ def _force_fill_shifts(
     for a in assignments:
         nurse_slot_assigned.add((a["nurse_id"], a["date"], a["shift_type"]))
 
+    # Per-nurse calendar of worked shift-types, used to enforce statutory
+    # rest rules on every force-pick (rebuilt from the MCMF result and kept
+    # in sync as forced assignments are appended below).
+    nurse_day_types: Dict[int, Dict[date, Set[ShiftType]]] = {}
+    for a in assignments:
+        nurse_day_types.setdefault(a["nurse_id"], {}).setdefault(
+            a["date"], set()
+        ).add(a["shift_type"])
+
     # Local fatigue accumulator: tracks forced-assignment penalty added
     # during THIS run so that the next force-pick sees updated scores
     # even before the DB is committed.  Weight matches _FATIGUE_FORCE_PENALTY.
@@ -321,6 +428,13 @@ def _force_fill_shifts(
             continue
 
         for _ in range(deficit):
+            # Rest-law feasibility — applied in EVERY tier, never overridden.
+            def _rest_ok(nid: int) -> bool:
+                return not _would_violate_rest(
+                    shift.date, shift.shift_type,
+                    nurse_day_types.get(nid, {}), week_start, week_end,
+                )
+
             # ── Tier 1: ideal — not CANNOT_WORK, not today, under capacity ──
             eligible = [
                 nid for nid in nurse_ids
@@ -328,6 +442,7 @@ def _force_fill_shifts(
                 and (nid, shift.date, shift.shift_type) not in hard_blocks
                 and not nurse_date_assigned.get((nid, shift.date), False)
                 and nurse_week_count.get(nid, 0) < nurse_cap_map.get(nid, 6)
+                and _rest_ok(nid)
             ]
 
             # ── Tier 2: relax weekly capacity ───────────────────────────────
@@ -337,33 +452,38 @@ def _force_fill_shifts(
                     if (nid, shift.date, shift.shift_type) not in nurse_slot_assigned
                     and (nid, shift.date, shift.shift_type) not in hard_blocks
                     and not nurse_date_assigned.get((nid, shift.date), False)
+                    and _rest_ok(nid)
                 ]
 
             # ── Tier 3: override CANNOT_WORK (true last resort) ─────────────
-            # APPROVED leave, same-slot duplication, and the one-shift-
-            # per-day hard rule are NEVER lifted.
+            # APPROVED leave, same-slot duplication, the one-shift-per-day
+            # hard rule, and statutory REST are NEVER lifted.
             if not eligible:
                 eligible = [
                     nid for nid in nurse_ids
                     if (nid, shift.date, shift.shift_type) not in nurse_slot_assigned
                     and (nid, shift.date, shift.shift_type) not in leave_blocks
                     and not nurse_date_assigned.get((nid, shift.date), False)
+                    and _rest_ok(nid)
                 ]
                 if eligible:
                     msg = (
                         f"WARNING: {shift.date.isoformat()} {shift.shift_type.value} "
                         "— overriding CANNOT_WORK (all nurses blocked, fairness "
-                        "fallback). APPROVED leave and one-shift-per-day are still respected."
+                        "fallback). APPROVED leave, one-shift-per-day and rest rules "
+                        "are still respected."
                     )
                     force_warnings.append(msg)
                     logger.warning(msg)
 
             if not eligible:
-                # Truly impossible: every remaining nurse is on leave or already in this slot
+                # Truly impossible: every remaining nurse is on leave, already
+                # in this slot, or would breach a statutory rest period.
                 msg = (
                     f"CRITICAL: {shift.date.isoformat()} {shift.shift_type.value} "
-                    f"could not be filled — every eligible nurse is on "
-                    f"APPROVED leave or already assigned to this slot."
+                    f"could not be filled without breaking a hard rule — every "
+                    f"candidate is on APPROVED leave, already assigned to this "
+                    f"slot, or would violate a statutory rest period."
                 )
                 force_warnings.append(msg)
                 logger.error(msg)
@@ -392,6 +512,9 @@ def _force_fill_shifts(
             nurse_week_count[chosen_id] = nurse_week_count.get(chosen_id, 0) + 1
             nurse_date_assigned[(chosen_id, shift.date)] = True
             nurse_slot_assigned.add((chosen_id, shift.date, shift.shift_type))
+            nurse_day_types.setdefault(chosen_id, {}).setdefault(
+                shift.date, set()
+            ).add(shift.shift_type)
             # Accumulate local fatigue so next forced pick avoids this nurse
             local_extra_fatigue[chosen_id] = (
                 local_extra_fatigue.get(chosen_id, 0.0) + _FATIGUE_FORCE_PENALTY
@@ -1269,6 +1392,7 @@ def generate_schedule(
     # ── Phase 2: Force-Assignment ──────────────────────
     filled_assignments, force_warnings = _force_fill_shifts(
         db, best.assignments, shifts, nurses, hard_blocks, leave_blocks,
+        week_start, week_end,
     )
     all_warnings = best.warnings + force_warnings
     total_assigned_final = len(filled_assignments)
