@@ -44,6 +44,16 @@ export function AuthProvider({ children }) {
     return me.data;
   };
 
+  // Password-less demo login as a specific user
+  const quickLogin = async (userId) => {
+    const res = await api.post('/auth/quick-login', { user_id: userId });
+    sessionStorage.setItem('token', res.data.access_token);
+    const me = await api.get('/auth/me');
+    setUser(me.data);
+    sessionStorage.setItem('user', JSON.stringify(me.data));
+    return me.data;
+  };
+
   const logout = () => {
     sessionStorage.removeItem('token');
     sessionStorage.removeItem('user');
@@ -51,7 +61,7 @@ export function AuthProvider({ children }) {
   };
 
   return (
-    <AuthContext.Provider value={{ user, login, logout, loading }}>
+    <AuthContext.Provider value={{ user, login, quickLogin, logout, loading }}>
       {children}
     </AuthContext.Provider>
   );

@@ -15,6 +15,22 @@ class TokenData(BaseModel):
     role: RoleEnum
 
 
+# ── Quick (password-less) login — demo/dev only ────────
+class QuickLoginUser(BaseModel):
+    id: int
+    first_name: str
+    last_name: str
+    role: RoleEnum
+    email: str
+
+    class Config:
+        from_attributes = True
+
+
+class QuickLoginRequest(BaseModel):
+    user_id: int
+
+
 # ── User ───────────────────────────────────────────────
 class UserCreate(BaseModel):
     email: EmailStr
