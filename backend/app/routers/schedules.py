@@ -11,16 +11,24 @@ router = APIRouter(prefix="/api/schedules", tags=["Schedules"])
 
 
 def _format_schedule(schedule: Schedule, db: Session) -> dict:
+    # Batch-fetch all nurse names in a single query to avoid N+1 round-trips
+    # to the (remote) database — one SELECT per assignment made large schedules
+    # take tens of seconds and time out behind the Nginx proxy.
+    nurse_ids = {a.nurse_id for a in schedule.assignments}
+    names = {}
+    if nurse_ids:
+        for u in db.query(User).filter(User.id.in_(nurse_ids)).all():
+            names[u.id] = f"{u.first_name} {u.last_name}"
+
     assignments = []
     for a in schedule.assignments:
-        nurse = db.query(User).filter(User.id == a.nurse_id).first()
         assignments.append(ShiftAssignmentOut(
             id=a.id,
             schedule_id=a.schedule_id,
             nurse_id=a.nurse_id,
             date=a.date,
             shift_type=a.shift_type,
-            nurse_name=f"{nurse.first_name} {nurse.last_name}" if nurse else None,
+            nurse_name=names.get(a.nurse_id),
         ))
     return ScheduleOut(
         id=schedule.id,
